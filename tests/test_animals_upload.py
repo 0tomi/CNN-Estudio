@@ -137,5 +137,5 @@ def test_app_animal_training_rgb_rendering(animals):
     run=at.session_state['runs'][-1]
     assert run['probabilities'].shape==(200,6)
     assert run['data'].images.shape[1:]==(3,32,32)
-    assert any('6 clases' in value.value for value in at.info)
+    assert any('6 clases' in value.value for value in at.caption)
     assert any('clasificador cerrado' in value.value.lower() for value in at.warning)

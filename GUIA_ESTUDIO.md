@@ -139,3 +139,17 @@ Se divide **desarrollo** (train + validación originales) en K partes con propor
 Aquí el mejor checkpoint también se selecciona con la validación del mismo fold. Es una evaluación práctica para estudiar: **no nested CV** ni estimación completamente libre del sesgo de elegir época/hiperparámetros. Repetir búsqueda puede sobreajustar desarrollo; reservá test para el final. K debe ser menor o igual al soporte mínimo de clases en desarrollo.
 
 [StratifiedKFold oficial](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.StratifiedKFold.html) · [Guía de validación cruzada](https://scikit-learn.org/stable/modules/cross_validation.html).
+
+## Parada temprana y checkpoint: dos decisiones diferentes
+
+**Checkpoint:** conservar los pesos del menor loss de validación observado. **Parada temprana:** dejar de actualizar cuando la reducción significativa se estanca. Aquí está desactivada por defecto; activarla agrega paciencia y `min_delta`.
+
+La primera época establece una referencia. Si la loss baja **más** que `min_delta` respecto de la mejor referencia significativa, reinicia paciencia. Mejoras menores se acumulan respecto de esa referencia: no se compara sólo con la época anterior. Tras N épocas consecutivas sin mejora significativa, termina. Igualdad no reinicia.
+
+Ejemplo:loss1.0→0.95→0.90 con `min_delta=0.2`, paciencia2: termina en época3, aunque esté mejorando. El checkpoint sí es la época3 (mínimo absoluto). Por eso un umbral exagerado puede detener demasiado pronto; no es prueba automática de sobreajuste. El laboratorio muestra épocas completadas/máximo y marca mejor checkpoint/parada en curvas. En cada fold la regla empieza de cero; test nunca decide la parada.
+
+## Leer un bloque convolucional en la interfaz
+
+**16 filtros de3×3** quiere decir16 mapas de salida; cada filtro tiene pesos para todos los canales entrantes. RGB con3 canales implica forma de pesos `16×3×3×3`, más16sesgos si existen. El lado del kernel es editable (entero1–7) y es cuadrado, no cantidad de filtros.
+
+Pooling2×2 resume ventanas de cuatro posiciones con stride2 y no cambia16canales. Se aplica al final del bloque; BN/activación se aplican después de cada convolución. Revisá la tabla para verificar efectos de kernel par, padding y pooling sobre las dimensiones.

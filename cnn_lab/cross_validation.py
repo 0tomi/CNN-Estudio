@@ -54,7 +54,7 @@ def cross_validate(config, k=3, epochs=None, callback=None, *, data=None):
         best = run["history"][run["best_epoch"] - 1]
         results.append({"fold":index, "seed":fold_config.seed, "train_count":len(fold_data.train), "val_count":len(fold_data.val),
                         "accuracy":metrics["accuracy"], "precision":metrics["precision"], "recall":metrics["recall"], "f1":metrics["f1"],
-                        "val_loss":best["val_loss"], "best_epoch":run["best_epoch"], "elapsed":run["elapsed"],
+                        "val_loss":best["val_loss"], "best_epoch":run["best_epoch"], "epochs_completed":run["epochs_completed"], "max_epochs":run["max_epochs"], "stopped_early":run["stopped_early"], "stop_reason":run["stop_reason"], "elapsed":run["elapsed"],
                         "train_indices":fold_data.train.tolist(), "val_indices":fold_data.val.tolist(),
                         "mean":np.asarray(fold_data.mean).reshape(-1).tolist(), "std":np.asarray(fold_data.std).reshape(-1).tolist(),
                         "history":run["history"], "batches":run["batches"]})

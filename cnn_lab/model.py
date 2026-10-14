@@ -43,6 +43,9 @@ class Config:
     momentum: float = 0.9
     augment: bool = False
     normalize: bool = True
+    early_stopping: bool = False
+    patience: int = 3
+    min_delta: float = 0.0001
 
     # Input-only compatibility: canonical exports contain only per-layer dense settings.
     hidden: InitVar[list[int] | None] = None
@@ -89,15 +92,17 @@ def validate(c):
         raise ValueError("Hiperparámetros fuera de rango seguro.")
     if not isinstance(c.seed, int) or not 0 <= c.seed < 2**32:
         raise ValueError("Semilla o neuronas inválidas.")
+    if not isinstance(c.early_stopping, bool) or not isinstance(c.patience, int) or isinstance(c.patience, bool) or not 1 <= c.patience <= 30 or not isinstance(c.min_delta, (int, float)) or isinstance(c.min_delta, bool) or not math.isfinite(c.min_delta) or not 0 <= c.min_delta <= 10:
+        raise ValueError("Parada temprana inválida: activar booleano, paciencia entera 1–30 y min_delta finito 0–10.")
     for layer in c.dense:
         if not isinstance(layer, DenseLayer) or not isinstance(layer.units, int) or isinstance(layer.units, bool) or not 4 <= layer.units <= 256 or not isinstance(layer.activation, str) or layer.activation not in ACTIVATIONS or not isinstance(layer.bias, bool) or not isinstance(layer.dropout, (int, float)) or isinstance(layer.dropout, bool) or not 0 <= layer.dropout <= .7:
             raise ValueError("Capa densa inválida: 4–256 neuronas, activación válida, dropout 0–0.7 y bias booleano.")
     for b in c.blocks:
-        if not 1 <= len(b.layers) <= 3 or b.activation not in ACTIVATIONS or b.pooling not in ("none","max","avg") or b.pool_size not in (2,3):
+        if not 1 <= len(b.layers) <= 3 or b.activation not in ACTIVATIONS or b.pooling not in ("none","max","avg") or not isinstance(b.pool_size,int) or isinstance(b.pool_size,bool) or not 2 <= b.pool_size <= 4:
             raise ValueError("Configuración de bloque inválida.")
         for l in b.layers:
-            if not (1 <= l.channels <= 64 and l.kernel in (1,3,5) and l.stride in (1,2) and 0 <= l.padding <= 2 and l.dilation in (1,2)):
-                raise ValueError("Convolución inválida: canales 1–64; kernel 1/3/5; stride/dilatación 1/2; padding 0–2.")
+            if not all(isinstance(value,int) and not isinstance(value,bool) for value in (l.channels,l.kernel,l.stride,l.padding,l.dilation)) or not (1 <= l.channels <= 64 and 1 <= l.kernel <= 7 and l.stride in (1,2) and 0 <= l.padding <= 3 and l.dilation in (1,2)):
+                raise ValueError("Convolución inválida: filtros 1–64; lado kernel entero 1–7; stride/dilatación 1/2; padding 0–3.")
 
 class CNN(nn.Module):
     def __init__(self, config: Config, size=None, in_channels=None, num_classes=None):

@@ -4,8 +4,24 @@ import time
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
-from .model import CNN
+from .model import CNN, validate
 from .data import prepare, augment
+
+class EarlyStopping:
+    """Track significant validation improvements independently from the absolute best checkpoint."""
+    def __init__(self, patience, min_delta):
+        self.patience, self.min_delta = patience, min_delta
+        self.reference_loss = float("inf")
+        self.wait = 0
+
+    def update(self, loss):
+        if loss < self.reference_loss - self.min_delta:
+            self.reference_loss = loss
+            self.wait = 0
+        else:
+            self.wait += 1
+        return self.wait >= self.patience
+
 
 def seed_all(seed):
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
@@ -19,6 +35,7 @@ def predict(model,data,indices):
     return logits.softmax(1).numpy(),logits
 
 def train(config, callback=None, *, data=None, evaluate_test=True):
+    validate(config)
     seed_all(config.seed)
     data = prepare(config) if data is None else data
     model = CNN(config,data.images.shape[-1],data.images.shape[1],len(data.names))
@@ -32,6 +49,8 @@ def train(config, callback=None, *, data=None, evaluate_test=True):
     loader = DataLoader(TensorDataset(data.images[data.train],data.labels[data.train]),batch_size=config.batch_size,shuffle=True,generator=generator)
     history,batches = [],[]
     best_loss,best_epoch,best = float("inf"),0,None
+    stopping = EarlyStopping(config.patience, config.min_delta)
+    stop_reason = "max_epochs"
     start = time.monotonic()
     for epoch in range(1,config.epochs+1):
         model.train(); total=correct=seen=0
@@ -48,11 +67,17 @@ def train(config, callback=None, *, data=None, evaluate_test=True):
             if callback: callback(trace,history,batches,len(loader))
         _,logits = predict(model,data,data.val)
         val_loss = float(loss_fn(logits,data.labels[data.val]))
-        row = {"epoch":epoch,"train_loss":total/seen,"val_loss":val_loss,"train_accuracy":correct/seen,"val_accuracy":float((logits.argmax(1)==data.labels[data.val]).float().mean())}
+        if not np.isfinite(val_loss): raise ValueError("Loss de validación no finita. Reducí learning rate.")
+        reached_patience = stopping.update(val_loss) if config.early_stopping else False
+        row = {"patience_count":stopping.wait, "significant_best_loss":stopping.reference_loss if config.early_stopping else None,"epoch":epoch,"train_loss":total/seen,"val_loss":val_loss,"train_accuracy":correct/seen,"val_accuracy":float((logits.argmax(1)==data.labels[data.val]).float().mean())}
         history.append(row)
         if val_loss < best_loss:
             best_loss,best_epoch,best = val_loss,epoch,copy.deepcopy(model.state_dict())
-        if callback: callback({**trace,"epoch_complete":True},history,batches,len(loader))
+        if reached_patience:
+            stop_reason = "patience"
+        if callback: callback({**trace,"epoch_complete":True,"stop_requested":reached_patience,"patience_count":stopping.wait},history,batches,len(loader))
+        if reached_patience:
+            break
     model.load_state_dict(best); model.eval()
     probabilities,_ = predict(model,data,data.test if evaluate_test else data.val)
-    return {"config":copy.deepcopy(config.dict()),"model":model,"data":data,"history":history,"batches":batches,"probabilities":probabilities,"best_epoch":best_epoch,"elapsed":time.monotonic()-start,"evaluation_split":"test" if evaluate_test else "validation"}
+    return {"config":copy.deepcopy(config.dict()),"model":model,"data":data,"history":history,"batches":batches,"probabilities":probabilities,"best_epoch":best_epoch,"epochs_completed":len(history),"max_epochs":config.epochs,"stopped_early":len(history)<config.epochs,"stop_reason":stop_reason,"elapsed":time.monotonic()-start,"evaluation_split":"test" if evaluate_test else "validation"}

@@ -64,7 +64,7 @@ Se conservan sólo los IDs CIFAR-10 **2, 3, 4, 5, 6, 7**, remapeados a **pájaro
 
 Este es un **clasificador cerrado**, no un detector de animales desconocidos: siempre elige una clase aprendida. Una foto fuera de dominio puede recibir alta confianza incorrecta; softmax no garantiza corrección. CIFAR-10 es más difícil que Digits y unas pocas épocas/subconjuntos no garantizan buena precisión.
 
-Los nuevos checkpoints incluyen `format_version=3`, `input_shape`, clases y estadísticas RGB tensoriales `(1,C,1,1)`. Los checkpoints grises anteriores conservan sus estadísticas escalares y siguen reconstruyéndose con `CNN(Config.from_dict(payload['config']))`; para archivos v2/v3 también podés usar los valores de `input_shape` explícitamente. La UI importa configuración JSON, **no pesos externos**.
+Los nuevos checkpoints incluyen `format_version=4`, `input_shape`, clases y estadísticas RGB tensoriales `(1,C,1,1)`. Los checkpoints grises anteriores conservan sus estadísticas escalares y siguen reconstruyéndose con `CNN(Config.from_dict(payload['config']))`; para archivos v2/v3 también podés usar los valores de `input_shape` explícitamente. La UI importa configuración JSON, **no pesos externos**.
 
 Pruebas adicionales (mocks sin descargas) y smoke de integración explícito:
 
@@ -83,7 +83,7 @@ En **Arquitectura**, elegí la profundidad **0–5 capas densas ocultas** y conf
 
 Ejemplo animales: `Flatten/GAP → Dense128/ReLU/dropout0.2 → Dense64/GELU/dropout0.1 → Dense6 (logits)`. Son **2 capas ocultas + 1 capa de salida**, no una MLP sin ocultas. Profundidad 0: sólo la salida lineal sobre las características de la CNN. La tabla y diagrama muestran cada operación y la entrada/salida de las densas.
 
-Configuración nueva canónica: `dense: [{"units":128,"activation":"relu","dropout":0.2,"bias":true}, ...]`. JSON/checkpoints antiguos con `hidden`, `activation` y `dropout` globales se migran automáticamente a capas individuales conservando sus valores. Los nuevos exports no mantienen esos campos redundantes. Checkpoint v3 conserva orden/nombres de parámetros de la base, estadísticas y shape; v1/v2 siguen reconstruibles mediante `Config.from_dict`.
+Configuración nueva canónica: `dense: [{"units":128,"activation":"relu","dropout":0.2,"bias":true}, ...]`. JSON/checkpoints antiguos con `hidden`, `activation` y `dropout` globales se migran automáticamente a capas individuales conservando sus valores. Los nuevos exports no mantienen esos campos redundantes. Checkpoint v4 conserva orden/nombres de parámetros de la base, estadísticas y shape; v1/v2 siguen reconstruibles mediante `Config.from_dict`.
 
 **Presets de configuración** son recetas, no modelos preentrenados: cargar reemplaza arquitectura, hiperparámetros y dataset del editor, no modelos/resultados anteriores. Inicializamos pesos aleatorios sólo al entrenar. El expander del sidebar explica exactamente cada preset.
 
@@ -115,3 +115,26 @@ En **Arquitectura → Vista del diagrama** hay tres vistas Plotly locales:
 - **Neuronas de la MLP:** puntos por unidad y conexiones densas. Hasta **12 unidades representativas** por vector/oculta, con índices reales y total explícito; todas las clases de salida. Las neuronas omitidas también existen y tienen conexiones. Activación/dropout se anotan, no agregan neuronas.
 
 Arrastrá para mover, rueda para zoom y barra del gráfico para restaurar vista/descargar PNG. Los nodos de bloques representan operaciones, no cada neurona. La CNN se resume en un vector en la vista MLP: **no se afirma que las convoluciones sean fully connected**. Son esquemas funcionales, no ubicación física de memoria/GPU. No requieren servicios ni scripts CDN adicionales.
+
+## Parada temprana: opcional, desactivada por defecto
+
+En **Entrenamiento → Parada temprana** podés activar la regla y definir **paciencia** (1–30 épocas) y **mejora mínima** (0–10 unidades de loss). Se monitorea exclusivamente la loss de validación al final de cada época. La primera fija la referencia; una reducción **estrictamente mayor** que `min_delta` reinicia el contador. Tras `patience` épocas consecutivas sin esa mejora, termina. Igualdad no cuenta como mejora.
+
+**Detenerse no es lo mismo que guardar el checkpoint:** los pesos restaurados siempre corresponden al **mínimo absoluto de loss de validación**, aunque esa mejora pequeña no alcance para reiniciar paciencia. Se informa cuántas épocas se completaron del máximo y el motivo; las curvas señalan checkpoint/parada. Si la paciencia se agota justo en la última época, no se afirma que se ahorraron épocas.
+
+La misma opción se aplica a cada fold con un contador nuevo. K-fold sigue sin evaluar test ni reemplazar la última CNN de inferencia. CSV de épocas incluye contador/referencia; JSON/config y checkpoints v4 guardan `epochs_completed`, `max_epochs`, `stopped_early` y `stop_reason`. Configuraciones anteriores importadas quedan con parada desactivada.
+
+```bash
+uv run python smoke_early_stopping.py
+```
+
+El smoke usa `min_delta=10` deliberadamente para probar la mecánica (3 de 8 épocas con paciencia2). **No demuestra que hubiera sobreajuste natural.** Para experimentar de verdad, empezá con `min_delta=0.0001`, paciencia3 y compará curvas sin ajustar sobre test.
+
+## Controles de bloques sin ambigüedad
+
+- **Cantidad de filtros / mapas de salida:**16 filtros generan16 canales, no un kernel de lado16. Cada filtro completo abarca todos los canales de entrada.
+- **Lado del filtro · k×k:**3 significa un filtro espacial3×3. Campo editable entero1–7, incluidos pares; no se soportan filtros rectangulares. Padding0–3, stride1–2 y dilatación1–2.
+- **Después de cada convolución:**BatchNorm opcional y activación de mapas.
+- **Reducción al finalizar el bloque:**pooling con ventana cuadrada2–4; stride=lado de ventana, sin padding. Mantiene canales y reduce alto/ancho. La tabla muestra las dimensiones reales y detecta colapsos.
+
+La interfaz usa secciones uniformes, learning rate con cinco decimales y resumen/acción principal visible; optimización, regularización y parada no quedan mezcladas. A390px los parámetros se apilan, las pestañas pueden desplazarse horizontalmente y los gráficos/tablas mantienen su propia navegación. Fuentes locales, foco de teclado visible y reducción de movimiento: sin recursos visuales externos.

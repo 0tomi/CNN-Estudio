@@ -1,0 +1,43 @@
+/* A quiet scientific workbench; native widgets keep semantics and keyboard behavior. */
+:root { --ink:#253836; --muted:#46615b; --line:#cbd4cd; --accent:#087e83; --ease-press:cubic-bezier(.23,1,.32,1); }
+[data-testid="stMainBlockContainer"] {padding-top:1.1rem; max-width:1440px;}
+h1,h2,h3 {font-family:Georgia,serif; font-weight:500!important; letter-spacing:-.02em;}
+h1 {font-size:1.85rem!important; line-height:1.15!important; padding-bottom:.3rem!important;}
+h2 {font-size:1.45rem!important; margin-top:.2rem!important;}
+h3 {font-size:1.15rem!important;}
+[data-testid="stCaptionContainer"] p {color:var(--muted); font-size:.875rem; line-height:1.55;}
+[data-testid="stWidgetLabel"] p {font-size:.9rem; font-weight:550; color:var(--ink);}
+[data-testid="stNumberInput"] input {font-variant-numeric:tabular-nums; min-height:44px;}
+[data-testid="stSelectbox"] [role="combobox"] {min-height:44px;}
+[data-testid="stButton"] button,[data-testid="stDownloadButton"] button {min-height:44px; border-radius:6px;}
+button:focus-visible,input:focus-visible,[role="combobox"]:focus-visible {outline:2px solid var(--accent)!important; outline-offset:3px;}
+[data-testid="stTabs"] [role="tablist"] {gap:1rem; border-bottom:1px solid var(--line); overflow-x:auto;}
+[data-testid="stTabs"] [role="tab"] {min-height:44px; font-weight:550; white-space:nowrap;}
+.lab-section {margin:.45rem 0 .8rem; border-top:1px solid var(--line); padding-top:.8rem;}
+.lab-section h3 {font-family:inherit; font-size:1rem!important; font-weight:650!important; margin:0 0 .25rem;}
+.lab-section p {color:var(--muted); font-size:.875rem; margin:0; line-height:1.45;}
+.st-key-launch_panel {background:#e9eee7; border-top:2px solid var(--accent); padding:1.2rem; border-radius:0;}
+.st-key-launch_panel [data-testid="stButton"] button {min-height:52px; font-size:1rem; font-weight:650;}
+.run-summary {margin:0 0 1rem;}
+.run-summary div {display:flex; justify-content:space-between; gap:1rem; padding:.55rem 0; border-bottom:1px solid #cbd4cd; font-size:.9rem;}
+.run-summary dt {color:var(--muted);}
+.run-summary dd {margin:0; font-weight:600; text-align:right;}
+[data-testid="stMetric"] {border-top:1px solid var(--line); padding-top:.6rem;}
+[data-testid="stFileUploaderDropzone"] {border:1px dashed #859b91; background:#eef0e9; min-height:110px;}
+[data-testid="stExpander"] {border-color:var(--line); border-radius:5px;}
+[data-testid="stSidebar"] h2 {font-size:1.15rem!important;}
+@media (hover:hover) and (pointer:fine) {
+  [data-testid="stButton"] button:not(:focus-visible),[data-testid="stDownloadButton"] button:not(:focus-visible) {transition:transform 160ms var(--ease-press);}
+  [data-testid="stButton"] button:active:not(:focus-visible),[data-testid="stDownloadButton"] button:active:not(:focus-visible) {transform:scale(.97);}
+}
+@media (prefers-reduced-motion:reduce) {
+  [data-testid="stButton"] button,[data-testid="stDownloadButton"] button {transition:none!important; transform:none!important;}
+}
+@media (max-width:640px) {
+  [data-testid="stMainBlockContainer"] {padding:1rem .85rem 2rem;}
+  h1 {font-size:1.5rem!important;}
+  [data-testid="stHorizontalBlock"] {flex-wrap:wrap; gap:.85rem;}
+  [data-testid="stColumn"] {min-width:100%!important; width:100%!important; flex:1 1 100%!important;}
+  [data-testid="stTabs"] [role="tablist"] {gap:.8rem;}
+  .st-key-launch_panel {padding:1rem;}
+}

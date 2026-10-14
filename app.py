@@ -2,6 +2,7 @@
 import io
 import json
 import copy
+import html
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -18,15 +19,29 @@ from cnn_lab.metrics import evaluate
 from cnn_lab.explain import explain, feature_maps
 
 st.set_page_config(page_title="CNN · Cuaderno experimental",layout="wide")
-st.markdown("""<style>
-h1,h2,h3 {font-family: Georgia, serif; font-weight:500!important; letter-spacing:-.025em;}
-.block-container {padding-top:2rem; max-width:1440px;}
-[data-testid='stMetric'] {border-top:1px solid #b8c7c0; padding-top:12px;}
-.stCaption {color:#46635d;}
-</style>""",unsafe_allow_html=True)
-st.caption("LABORATORIO 01 / INTELIGENCIA ARTIFICIAL / CPU LOCAL")
-st.title("Entender una CNN, experimento a experimento.")
-st.write("Configurá una red pequeña, observá cómo aprende y contrastá tus hipótesis con evidencia.")
+st.markdown("<style>"+Path("ui/workbench.css").read_text()+"</style>",unsafe_allow_html=True)
+st.caption("CNN / CUADERNO EXPERIMENTAL · CPU LOCAL")
+st.title("Laboratorio de redes convolucionales")
+st.caption("Configurá → entrená → contrastá tus hipótesis. Datos, métricas y atribuciones en un mismo cuaderno.")
+
+def section(title,description=""):
+    st.markdown(f'<div class="lab-section"><h3>{html.escape(title)}</h3><p>{html.escape(description)}</p></div>',unsafe_allow_html=True)
+
+def summary(items):
+    rows=''.join(f'<div><dt>{html.escape(str(label))}</dt><dd>{html.escape(str(value))}</dd></div>' for label,value in items)
+    st.markdown(f'<dl class="run-summary">{rows}</dl>',unsafe_allow_html=True)
+
+def history_figure(history,keys,best_epoch,stopped_early=False):
+    fig=go.Figure()
+    for key in keys:
+        fig.add_trace(go.Scatter(x=[row["epoch"] for row in history],y=[row[key] for row in history],mode="lines+markers",name=key))
+    last=history[-1]["epoch"]
+    fig.add_vline(x=best_epoch,line_dash="dash",line_color="#087e83",annotation_text="Mejor checkpoint"+(" · parada" if stopped_early and last==best_epoch else ""))
+    if stopped_early and last!=best_epoch:
+        fig.add_vline(x=last,line_dash="dot",line_color="#a75d42",annotation_text="Parada por paciencia",annotation_position="bottom right")
+    fig.update_layout(height=290,margin=dict(l=20,r=20,t=35,b=35),xaxis_title="Época",xaxis=dict(dtick=1),legend=dict(orientation="h",y=-.2),paper_bgcolor="#F7F5EF",plot_bgcolor="#F7F5EF")
+    return fig
+
 if "runs" not in st.session_state: st.session_state.runs=[]
 if "base" not in st.session_state: st.session_state.base=Config().dict()
 base = Config.from_dict(st.session_state.base)
@@ -47,8 +62,9 @@ with st.sidebar:
         for key in list(st.session_state):
             if key.startswith("cfg_"): del st.session_state[key]
         st.rerun()
-    st.caption("Son recetas de arquitectura e hiperparámetros, NO redes preentrenadas. Cargar reemplaza el editor (incluye dataset), no tus resultados anteriores. Los pesos se inicializan al azar al entrenar.")
+    st.caption("Recetas de configuración, NO redes preentrenadas.")
     with st.expander("Qué carga cada preset"):
+        st.caption("Cargar reemplaza arquitectura, hiperparámetros y dataset del editor; no tus resultados anteriores. Los pesos se inicializan al azar al entrenar.")
         st.markdown("**CNN base:** Digits, 2 bloques (16→32), max-pool, densa64/ReLU/dropout0.1, Adam0.003, 8 épocas.\n\n**Sin pooling:** base sin pooling. **Promedio global:** base con GAP y sin ocultas. **Sobreajuste:** Digits300, densas128→64 sin dropout, 25 épocas. **Con augmentation:** base + affine. **Animales CIFAR-10:** RGB, 3000 muestras, 10 épocas, resto de la base.")
     upload=st.file_uploader("Importar configuración JSON",type="json")
     if upload and st.button("Aplicar JSON"):
@@ -67,14 +83,15 @@ training_tab,arch_tab,data_tab,explain_tab,test_tab,upload_tab,study_tab=st.tabs
 
 def select(label,options,value,key):
     return st.selectbox(label,options,index=options.index(value),key="cfg_"+key)
-def number(label,lo,hi,value,key,step=1):
-    return st.number_input(label,min_value=lo,max_value=hi,value=value,step=step,key="cfg_"+key)
+def number(label,lo,hi,value,key,step=1,format=None,help=None):
+    return st.number_input(label,min_value=lo,max_value=hi,value=value,step=step,key="cfg_"+key,format=format,help=help)
 def check(label,value,key):
     return st.checkbox(label,value=value,key="cfg_"+key)
 
 with arch_tab:
     st.header("Bloques, mapas y decisiones")
     st.caption("Cada convolución → BatchNorm opcional → activación. Pooling al final del bloque. La salida tiene un logit por clase (6 animales o 10 clases), no probabilidades.")
+    section("Estructura global","Cantidad de bloques, reducción espacial y profundidad de la MLP.")
     cols=st.columns(3)
     with cols[0]: count=number("Bloques convolucionales",1,3,len(base.blocks),"blocks")
     with cols[1]: head=select("Reducción final",["flatten","gap"],base.head,"head")
@@ -82,23 +99,33 @@ with arch_tab:
     blocks=[]
     for i in range(count):
         b=base.blocks[i] if i<len(base.blocks) else Block()
-        with st.expander(f"Bloque {i+1}",expanded=True):
-            cols=st.columns(5)
-            with cols[0]: n=number("Convoluciones",1,3,len(b.layers),f"{i}_n")
-            with cols[1]: bn=check("BatchNorm",b.batchnorm,f"{i}_bn")
-            with cols[2]: activation=select("Activación",list(ACTIVATIONS),b.activation,f"{i}_act")
-            with cols[3]: pool=select("Pooling",["none","max","avg"],b.pooling,f"{i}_pool")
-            with cols[4]: ps=select("Tamaño pool",[2,3],b.pool_size,f"{i}_ps")
+        with st.expander(f"Bloque convolucional {i+1}",expanded=True):
+            n=number("Cantidad de convoluciones en este bloque",1,3,len(b.layers),f"{i}_n",help="Cada convolución tiene su propio conjunto de filtros, seguido de BN opcional y activación.")
             layers=[]
             for j in range(n):
                 l=b.layers[j] if j<len(b.layers) else Conv(b.layers[-1].channels)
-                cols=st.columns(5)
-                with cols[0]: channels=number(f"Conv {j+1} · canales",1,64,l.channels,f"{i}_{j}_ch")
-                with cols[1]: kernel=select("Kernel",[1,3,5],l.kernel,f"{i}_{j}_k")
-                with cols[2]: stride=select("Stride",[1,2],l.stride,f"{i}_{j}_s")
-                with cols[3]: padding=number("Padding",0,2,l.padding,f"{i}_{j}_p")
-                with cols[4]: dilation=select("Dilatación",[1,2],l.dilation,f"{i}_{j}_d")
+                section(f"Convolución {j+1} · filtros","Cada filtro recorre todos los canales de entrada y produce un mapa de salida.")
+                cols=st.columns(3)
+                with cols[0]: channels=number("Cantidad de filtros / mapas de salida",1,64,l.channels,f"{i}_{j}_ch",help="16 filtros producen 16 canales de salida. No es el tamaño espacial del filtro.")
+                with cols[1]: kernel=number("Lado del filtro · k × k",1,7,l.kernel,f"{i}_{j}_k",help="Escribí el lado entero de un filtro CUADRADO: 3 significa 3×3, no tres filtros. Admite1–7, incluidos tamaños pares.")
+                with cols[2]: stride=number("Paso de convolución · stride",1,2,l.stride,f"{i}_{j}_s",help="Avance del filtro en píxeles: 1 o 2.")
+                cols=st.columns(2)
+                with cols[0]: padding=number("Relleno por borde · padding",0,3,l.padding,f"{i}_{j}_p",help="Píxeles de cero añadidos a cada borde. Rango0–3.")
+                with cols[1]: dilation=number("Separación del kernel · dilatación",1,2,l.dilation,f"{i}_{j}_d",help="1: posiciones contiguas; 2: deja una separación entre pesos.")
+                st.caption(f"{channels} filtros espaciales de {kernel}×{kernel} → {channels} mapas de salida. Stride {stride}, padding {padding}, dilatación {dilation}. El número de canales de entrada lo fija la capa anterior.")
                 layers.append(Conv(channels,kernel,stride,padding,dilation))
+            section("Después de cada convolución","Transformaciones de sus mapas; no agregan filtros convolucionales.")
+            cols=st.columns(2)
+            with cols[0]: bn=check("Aplicar BatchNorm a los mapas",b.batchnorm,f"{i}_bn")
+            with cols[1]: activation=select("Activación de los mapas",list(ACTIVATIONS),b.activation,f"{i}_act")
+            section("Reducción espacial al finalizar el bloque","Pooling resume ventanas espaciales; mantiene la cantidad de canales.")
+            cols=st.columns(2)
+            with cols[0]: pool=select("Tipo de pooling",["none","max","avg"],b.pooling,f"{i}_pool")
+            ps=b.pool_size
+            if pool!="none":
+                with cols[1]: ps=number("Lado de ventana · p × p",2,4,b.pool_size,f"{i}_ps",help="2 significa ventana2×2. Stride=lado de ventana; sin padding. Se aplica una vez al final del bloque.")
+                st.caption(f"{pool} pooling: ventana {ps}×{ps}, stride {ps}, sin padding. Reduce alto/ancho; conserva {channels} canales del último mapa convolucional.")
+            else: st.caption("Sin pooling: no se resume ni reduce el mapa al finalizar este bloque.")
             blocks.append(Block(layers,bn,activation,pool,ps))
     st.subheader("MLP · capas densas ocultas y salida")
     st.caption("Una MLP puede tener varias capas ocultas. Cada densa tiene sus propios pesos, activación y dropout. La salida final es otra capa densa: un logit por clase, sin softmax antes de CrossEntropyLoss.")
@@ -109,20 +136,23 @@ with arch_tab:
             cols=st.columns(4)
             with cols[0]: units=number("Neuronas / unidades",4,256,layer.units,f"dense_units_{i}")
             with cols[1]: act=select("Activación de esta capa",list(ACTIVATIONS),layer.activation,f"dense_activation_{i}")
-            with cols[2]: drop=number("Dropout de esta capa",0.,.7,layer.dropout,f"dense_dropout_{i}",.05)
+            with cols[2]: drop=number("Dropout de esta capa",0.,.7,layer.dropout,f"dense_dropout_{i}",.05,format="%.2f")
             with cols[3]: bias=check("Bias / sesgo",layer.bias,f"dense_bias_{i}")
             dense.append(DenseLayer(units,act,drop,bias))
     if not dense: st.caption("Sin ocultas: Flatten/GAP → capa densa de salida. Es un clasificador lineal sobre las características convolucionales.")
 
 with data_tab:
     st.header("Datos pequeños, preguntas grandes")
-    cols=st.columns(4)
+    section("Dataset y presupuesto","Seleccioná datos pequeños para comparar hipótesis sin esperar entrenamientos largos.")
+    cols=st.columns(2)
     def dataset_changed():
         if st.session_state.cfg_dataset == "CIFAR10Animals": st.session_state.cfg_samples = 3000
     with cols[0]: dataset=st.selectbox("Dataset",list(DATASET_SPECS),index=list(DATASET_SPECS).index(base.dataset),key="cfg_dataset",format_func=lambda name:"CIFAR-10 · solo animales" if name=="CIFAR10Animals" else name,on_change=dataset_changed)
     with cols[1]: samples=number("Máximo de muestras",200,10000,base.samples,"samples",100)
-    with cols[2]: normalize=check("Normalizar con estadísticas de train",base.normalize,"normalize")
-    with cols[3]: augmentation=check("Augmentation sólo en train",base.augment,"augment")
+    section("Preprocesado de train","Las estadísticas se aprenden sólo en train; augmentation nunca se aplica a val/test.")
+    cols=st.columns(2)
+    with cols[0]: normalize=check("Normalizar con estadísticas de train",base.normalize,"normalize")
+    with cols[1]: augmentation=check("Augmentation sólo en train",base.augment,"augment")
     st.markdown("""| Dataset | Escala | Qué permite aprender |
 |---|---|---|
 | **Digits** | 1797 imágenes de 8×8, offline | Iteración rápida, kernels, pooling y métricas |
@@ -131,27 +161,44 @@ with data_tab:
 | **CIFAR-10 · solo animales** | RGB 32×32, 6 clases | Pájaro, gato, ciervo, perro, rana y caballo; fotos más difíciles |""")
     if dataset == "CIFAR10Animals":
         st.caption("Se filtran IDs originales 2–7 antes del muestreo: no se entrenan vehículos. El archivo fuente completo (~163 MB) se descarga una vez y queda en data/. 3000 muestras seleccionadas ≈500 por clase ANTES de reservar 20% de validación: ≈400 train y 100 val por clase. Test se toma sólo del test oficial de animales.")
-    st.info("Digits: 70% train / 15% validación / 15% test, estratificados y disjuntos. MNIST/Fashion/CIFAR: test oficial independiente; 80/20 dentro del subconjunto oficial de entrenamiento. Nunca se calcula media/desvío sobre test.")
+    st.caption("Digits: 70% train / 15% validación / 15% test, estratificados y disjuntos. MNIST/Fashion/CIFAR: test oficial independiente; 80/20 dentro del subconjunto oficial de entrenamiento. Nunca se calcula media/desvío sobre test.")
 
 with training_tab:
-    st.header("Observá el aprendizaje")
-    cols=st.columns(4)
-    with cols[0]: epochs=number("Épocas",1,30,base.epochs,"epochs")
-    with cols[1]: batch_size=select("Batch size",[16,32,64,128,256],base.batch_size,"batch_size")
-    with cols[2]: optimizer=select("Optimizador",["Adam","AdamW","SGD"],base.optimizer,"optimizer")
-    with cols[3]: lr=number("Learning rate",.00001,.1,base.lr,"lr",.001)
-    with st.expander("Regularización y reproducibilidad"):
-        cols=st.columns(3)
-        with cols[0]: wd=number("Weight decay",0.,.1,base.weight_decay,"wd",.001)
-        with cols[1]: momentum=number("Momentum (SGD)",0.,.99,base.momentum,"momentum",.05)
-        with cols[2]: seed=number("Semilla",0,2**32-1,base.seed,"seed")
+    st.header("Entrenamiento")
+    controls,launch=st.columns([1.55,1],gap="large")
+    with controls:
+        section("Plan de entrenamiento","Una época recorre train; cada batch produce una actualización de pesos.")
+        cols=st.columns(2)
+        with cols[0]: epochs=number("Máximo de épocas",1,30,base.epochs,"epochs",help="1–30. Con parada temprana puede terminar antes.")
+        with cols[1]: batch_size=select("Batch size · muestras",[16,32,64,128,256],base.batch_size,"batch_size")
+        section("Optimización","Elegí cómo se actualizan los parámetros y la magnitud de cada paso.")
+        cols=st.columns(2)
+        with cols[0]: optimizer=select("Optimizador",["Adam","AdamW","SGD"],base.optimizer,"optimizer")
+        with cols[1]: lr=number("Learning rate",.00001,.1,base.lr,"lr",.001,format="%.5f",help="0.00001–0.1. El valor se muestra con cinco decimales; 0.003 no es cero.")
+        momentum=base.momentum
+        if optimizer=="SGD": momentum=number("Momentum · SGD",0.,.99,base.momentum,"momentum",.05,format="%.2f",help="0 desactiva la acumulación de dirección; rango 0–0.99.")
+        section("Regularización y reproducibilidad","Weight decay limita magnitudes de pesos; la semilla fija inicialización y orden de batches.")
+        cols=st.columns(2)
+        with cols[0]: wd=number("Weight decay",0.,.1,base.weight_decay,"wd",.001,format="%.5f")
+        with cols[1]: seed=number("Semilla",0,2**32-1,base.seed,"seed")
+        section("Parada temprana · opcional","Vigila loss de validación. Guardar el mejor checkpoint y decidir cuándo detenerse son dos reglas distintas.")
+        early=check("Activar parada temprana",base.early_stopping,"early_stopping")
+        patience,min_delta=base.patience,base.min_delta
+        if early:
+            cols=st.columns(2)
+            with cols[0]: patience=number("Paciencia · épocas",1,30,base.patience,"patience",help="Detiene tras N épocas consecutivas sin mejora significativa. La primera fija la referencia.")
+            with cols[1]: min_delta=number("Mejora mínima · loss",0.,10.,float(base.min_delta),"min_delta",.0001,format="%.5f",help="La reducción debe ser estrictamente MAYOR a min_delta. Igualdad no reinicia paciencia.")
+    with launch:
+        launch_panel=st.container(key="launch_panel")
 
-config=Config(blocks=blocks,head=head,dense=dense,dataset=dataset,samples=samples,seed=seed,epochs=epochs,batch_size=batch_size,optimizer=optimizer,lr=lr,weight_decay=wd,momentum=momentum,augment=augmentation,normalize=normalize)
+config=Config(blocks=blocks,head=head,dense=dense,dataset=dataset,samples=samples,seed=seed,epochs=epochs,batch_size=batch_size,optimizer=optimizer,lr=lr,weight_decay=wd,momentum=momentum,augment=augmentation,normalize=normalize,early_stopping=early,patience=patience,min_delta=min_delta)
 valid=True
+invalid_reason=""
 try:
     preview=CNN(config)
 except (ValueError,RuntimeError) as e:
     valid=False
+    invalid_reason=str(e)
     with arch_tab: st.error(str(e))
 with arch_tab:
     if valid:
@@ -175,7 +222,8 @@ with arch_tab:
     st.download_button("Exportar configuración JSON",json.dumps(config.dict(),indent=2),"cnn-config.json","application/json")
 
 with data_tab:
-    if st.button("Preparar y visualizar datos",disabled=not valid):
+    section("Inspección antes de entrenar","Comprobá clases, particiones y transformaciones sobre ejemplos reales.")
+    if st.button("Preparar y visualizar datos",disabled=not valid,width="stretch"):
         try:
             with st.spinner("Preparando dataset…"): st.session_state.preview_data=prepare(config)
         except Exception as e: st.error(f"No se pudo preparar el dataset: {e}. Elegí Digits para trabajar offline.")
@@ -190,9 +238,20 @@ with data_tab:
             col.image(display_image(changed[i]),caption="Affine pequeño",clamp=True)
         st.caption("Vista ilustrativa de augmentation (rotación ±7.5°, traslación ±7.5%). Sólo se aplica al entrenar si está activado. Se transforma antes de normalizar; BatchNorm actúa dentro de la red, no reemplaza este paso.")
 
+with launch_panel:
+    st.subheader("Tu próximo experimento")
+    size,channels,classes=dataset_spec(dataset)
+    summary([("Datos",dataset),("Entrada",f"{channels} × {size} × {size} · {classes} clases"),("Arquitectura",f"{len(blocks)} bloques · {len(dense)} densas ocultas"),("Optimización",f"{optimizer} · lr {lr:.5f}"),("Plan",f"batch {batch_size} · hasta {epochs} épocas"),("Parada",f"paciencia {patience} · Δ>{min_delta:.5f}" if early else "Desactivada")])
+    if valid: st.caption(f"{sum(p.numel() for p in preview.parameters()):,} parámetros · checkpoint por menor loss de validación.")
+    else: st.error(f"Revisá Arquitectura: {invalid_reason}")
+    train_clicked=st.button("Entrenar CNN",type="primary",disabled=not valid,width="stretch")
+    st.caption("Digits: sin descargas." if dataset=="Digits" else "La primera preparación descarga el dataset y lo conserva localmente. CIFAR-10: archivo completo ~163 MB.")
+    st.caption("CPU local · entrenamiento síncrono, sin pausa/reanudación. No cambies controles mientras entrena.")
+
 with training_tab:
+    section("Seguimiento y resultados","Los resultados usan la configuración congelada de cada ejecución, no los controles que edites después.")
     progress=st.empty(); live=st.empty(); chart=st.empty()
-    if st.button("Entrenar CNN",type="primary",disabled=not valid):
+    if train_clicked:
         def callback(trace,history,batches,total):
             progress.progress(((trace["epoch"]-1)*total+trace["batch"])/(epochs*total))
             live.caption(f'Época {trace["epoch"]}/{epochs} · batch {trace["batch"]}/{total} · loss {trace["loss"]:.4f} · {trace["elapsed"]:.1f}s')
@@ -203,9 +262,10 @@ with training_tab:
             st.session_state.completed_runs = st.session_state.get("completed_runs", len(st.session_state.runs)) + 1
             st.session_state.runs.append(run)
             st.session_state.runs=st.session_state.runs[-6:]
-            st.success(f"Entrenamiento finalizado. Mejor checkpoint: época {run['best_epoch']} por menor loss de validación.")
+            progress.empty()
+            st.success(f"Entrenamiento finalizado · {run['epochs_completed']} de {run['max_epochs']} épocas. " + (f"Parada por paciencia ({config.patience}). " if run["stop_reason"]=="patience" else "Máximo de épocas alcanzado. ") + f"Mejor checkpoint: época {run['best_epoch']} por menor loss de validación.")
         except Exception as e: st.error(f"Entrenamiento detenido: {e}")
-    if not st.session_state.runs: st.info("Empezá con CNN base + Digits + 8 épocas. Antes de entrenar, predecí qué cambiará si quitás el pooling.")
+    if not st.session_state.runs: st.caption("Aún no hay ejecuciones. Empezá con Digits y la configuración base; formulá una hipótesis antes de cambiar un parámetro.")
 
 run=None
 if st.session_state.runs:
@@ -214,10 +274,12 @@ if st.session_state.runs:
         selected=st.selectbox("Experimento para inspeccionar",list(range(len(run_labels))),index=len(run_labels)-1,format_func=lambda i:run_labels[i])
         run=st.session_state.runs[selected]
         if Config.from_dict(run["config"]).dict()!=config.dict(): st.warning("Los controles actuales no coinciden con este experimento. Los resultados y mapas usan su configuración congelada, no los controles editados.")
+        st.caption(f"Completadas {run.get('epochs_completed',len(run['history']))} de {run.get('max_epochs',run['config']['epochs'])} épocas · mejor checkpoint {run['best_epoch']} · motivo {"paciencia" if run.get('stop_reason')=='patience' else "máximo de épocas"}")
         st.json(run["config"],expanded=False)
         cols=st.columns(2)
         h=pd.DataFrame(run["history"]).set_index("epoch")
-        cols[0].line_chart(h[["train_loss","val_loss"]]); cols[1].line_chart(h[["train_accuracy","val_accuracy"]])
+        cols[0].plotly_chart(history_figure(run["history"],["train_loss","val_loss"],run["best_epoch"],run.get("stopped_early",False)),width="stretch")
+        cols[1].plotly_chart(history_figure(run["history"],["train_accuracy","val_accuracy"],run["best_epoch"],run.get("stopped_early",False)),width="stretch")
         st.caption("Train se mide durante actualizaciones, con dropout/augmentation activos; validación se mide al final en eval. No son condiciones idénticas.")
         with st.expander("Traza real batch a batch"):
             st.line_chart(pd.DataFrame(run["batches"]).set_index("step")[["loss"]]); st.dataframe(run["batches"],hide_index=True)
@@ -226,18 +288,18 @@ if st.session_state.runs:
         st.download_button("Descargar logs CSV",pd.DataFrame(run["batches"]).to_csv(index=False),"batches.csv","text/csv")
         st.download_button("Descargar épocas CSV",pd.DataFrame(run["history"]).to_csv(index=False),"epochs.csv","text/csv")
         buffer=io.BytesIO()
-        torch.save({"format_version":3,"input_shape":list(run["data"].images.shape[1:]),"source_indices":run["data"].source_indices,"state_dict":run["model"].state_dict(),"config":Config.from_dict(run["config"]).dict(),"mean":run["data"].mean,"std":run["data"].std,"classes":run["data"].names,"best_epoch":run["best_epoch"],"split_indices":{"train":run["data"].train.tolist(),"val":run["data"].val.tolist(),"test":run["data"].test.tolist()},"history":run["history"]},buffer)
+        torch.save({"format_version":4,"input_shape":list(run["data"].images.shape[1:]),"source_indices":run["data"].source_indices,"state_dict":run["model"].state_dict(),"config":Config.from_dict(run["config"]).dict(),"mean":run["data"].mean,"std":run["data"].std,"classes":run["data"].names,"best_epoch":run["best_epoch"],"epochs_completed":run.get("epochs_completed",len(run["history"])),"max_epochs":run.get("max_epochs",run["config"]["epochs"]),"stopped_early":run.get("stopped_early",False),"stop_reason":run.get("stop_reason","max_epochs"),"split_indices":{"train":run["data"].train.tolist(),"val":run["data"].val.tolist(),"test":run["data"].test.tolist()},"history":run["history"]},buffer)
         st.download_button("Descargar checkpoint + metadatos",buffer.getvalue(),"cnn-best.pt","application/octet-stream")
         st.caption("Historial: últimos 6 experimentos de esta sesión en memoria. Descargá artefactos antes de cerrar/reiniciar. Checkpoint para inferencia, no para reanudar optimizer.")
 
 with training_tab:
     st.divider()
-    st.subheader("Validación K-fold estratificada")
+    section("Validación K-fold estratificada","Comparación independiente del split: acción separada del entrenamiento para inferencia.")
     st.write("Repartí el conjunto de desarrollo (train + validación originales) en K folds. Cada muestra valida exactamente una vez. Test queda separado y nunca se evalúa en esta acción.")
     cols=st.columns(2)
     with cols[0]: cv_k=st.selectbox("Cantidad de folds K",[2,3,5],index=1,key="cv_k")
     with cols[1]: cv_epochs=st.number_input("Épocas por fold",1,30,min(epochs,3),key="cv_epochs")
-    st.caption(f"Coste: {cv_k} entrenamientos independientes × {cv_epochs} épocas = {cv_k*cv_epochs} épocas en CPU. Se carga el dataset una vez; en datasets no cacheados puede descargarse. Cada fold crea pesos y optimizador nuevos. No reemplaza la última CNN para Probar imagen; no guarda modelos de folds ni crea un ensemble.")
+    st.caption(f"Coste: {cv_k} entrenamientos independientes × {cv_epochs} épocas= hasta {cv_k*cv_epochs} épocas en CPU. Parada temprana: {"activada, cada fold puede terminar antes" if early else "desactivada"}. Se carga el dataset una vez; en datasets no cacheados puede descargarse. Cada fold crea pesos y optimizador nuevos. No reemplaza la última CNN para Probar imagen; no guarda modelos de folds ni crea un ensemble.")
     cv_progress=st.empty(); cv_live=st.empty(); cv_chart=st.empty()
     if st.button("Ejecutar validación K-fold",disabled=not valid):
         def cv_callback(fold,trace,history,batches,total):
@@ -247,6 +309,7 @@ with training_tab:
                 cv_chart.line_chart(pd.DataFrame(history).set_index("epoch")[["train_loss","val_loss"]])
         try:
             st.session_state.cv_result=cross_validate(config,cv_k,cv_epochs,cv_callback)
+            cv_progress.empty()
             st.success("K-fold finalizado. Test no fue evaluado; los entrenamientos normales anteriores siguen intactos.")
         except Exception as error: st.error(f"K-fold detenido: {error}")
     if "cv_result" in st.session_state:
@@ -254,8 +317,8 @@ with training_tab:
         if cv["config"]!={**config.dict(),"epochs":cv_epochs} or cv["k"]!=cv_k:
             st.warning("Los controles actuales no coinciden con esta validación K-fold. Se muestran los resultados de su configuración congelada.")
         st.caption(f"Resultado guardado: K={cv['k']} · {cv['epochs']} épocas/fold · {cv['elapsed']:.1f}s · {len(cv['heldout_test_indices'])} ejemplos test reservados sin evaluar")
-        columns=["fold","seed","train_count","val_count","accuracy","precision","recall","f1","val_loss","best_epoch","elapsed"]
-        table=pd.DataFrame(cv["folds"])[columns]
+        columns=["fold","seed","train_count","val_count","accuracy","precision","recall","f1","val_loss","best_epoch","epochs_completed","max_epochs","stopped_early","stop_reason","elapsed"]
+        table=pd.DataFrame(cv["folds"]).reindex(columns=columns)
         st.dataframe(table,hide_index=True,width="stretch")
         summary=pd.DataFrame(cv["aggregate"]).T.rename(columns={"mean":"media","std":"desvío entre folds"})
         st.dataframe(summary,width="stretch")
@@ -266,7 +329,8 @@ with training_tab:
                 st.markdown(f"**Fold {fold['fold']} · seed {fold['seed']}**")
                 cols=st.columns(2)
                 frame=pd.DataFrame(fold["history"]).set_index("epoch")
-                cols[0].line_chart(frame[["train_loss","val_loss"]]); cols[1].line_chart(frame[["train_accuracy","val_accuracy"]])
+                cols[0].plotly_chart(history_figure(fold["history"],["train_loss","val_loss"],fold["best_epoch"],fold.get("stopped_early",False)),width="stretch")
+                cols[1].plotly_chart(history_figure(fold["history"],["train_accuracy","val_accuracy"],fold["best_epoch"],fold.get("stopped_early",False)),width="stretch")
                 st.line_chart(pd.DataFrame(fold["batches"]).set_index("step")[["loss"]])
         st.download_button("Descargar resultados K-fold CSV",table.to_csv(index=False),"kfold-resultados.csv","text/csv")
         st.download_button("Descargar K-fold completo JSON",json.dumps(cv,indent=2),"kfold-config-logs.json","application/json")
@@ -280,13 +344,16 @@ with test_tab:
         st.caption(f"Evaluación del mejor checkpoint (época {run['best_epoch']}) sobre {len(labels)} ejemplos held-out.")
         cols=st.columns(5)
         for col,key in zip(cols,["accuracy","precision","recall","f1","auc"]): col.metric(key.upper()+ (" macro" if key not in ("accuracy",) else ""),f"{m[key]:.3f}" if m[key] is not None else "Indefinido")
-        st.dataframe(pd.DataFrame(m["per_class"],index=d.names))
+        section("Rendimiento por clase","Precision, recall y F1 muestran errores que accuracy puede ocultar.")
+        st.dataframe(pd.DataFrame(m["per_class"],index=d.names),width="stretch")
+        section("Matriz de confusión","Filas: clase real. Columnas: predicción.")
         normalized=st.checkbox("Normalizar matriz por clase real")
         cm=m["confusion"].astype(float)
         if normalized: cm=np.divide(cm,cm.sum(1,keepdims=True),out=np.zeros_like(cm),where=cm.sum(1,keepdims=True)!=0)
         fig=go.Figure(go.Heatmap(z=cm,x=d.names,y=d.names,colorscale="Teal",text=cm.round(2),texttemplate="%{text}"))
         fig.update_layout(xaxis_title="Predicción",yaxis_title="Clase real",yaxis_autorange="reversed")
         st.plotly_chart(fig,width="stretch")
+        section("ROC · one-vs-rest","Curvas de umbral sobre probabilidades; no sobre etiquetas discretas.")
         fig=go.Figure()
         for i,(fpr,tpr,score) in m["curves"].items(): fig.add_trace(go.Scatter(x=fpr,y=tpr,name=f"{d.names[i]} · AUC {score:.3f}"))
         fig.add_trace(go.Scatter(x=[0,1],y=[0,1],name="Azar",line=dict(dash="dash",color="gray")))
@@ -305,12 +372,14 @@ with explain_tab:
     if run is None: st.caption("Los filtros, mapas y atribuciones estarán disponibles tras entrenar.")
     else:
         model=run["model"]; d=run["data"]
+        section("Muestra, capa y objetivo","Elegí qué entrada y clase querés analizar antes de interpretar el mapa.")
         cols=st.columns(3)
         with cols[0]: sample=st.number_input("Índice de muestra test",0,len(d.test)-1,0)
         with cols[1]: layer=st.selectbox("Capa convolucional",model.conv_names())
         with cols[2]: target=st.selectbox("Clase objetivo",list(range(len(d.names))),format_func=lambda i:d.names[i])
         index=d.test[sample]; x=d.normalized([index]); maps=feature_maps(model,x,layer)
         st.caption(f"Etiqueta real: {d.names[int(d.labels[index])]} · mapas: {maps.shape[0]} × {maps.shape[1]} × {maps.shape[2]}")
+        section("Método de atribución","Grad-CAM explica un logit; el gradiente de neurona mide sensibilidad local de una unidad.")
         method=st.radio("Atribución",["Grad-CAM","Gradiente de neurona"],horizontal=True)
         channel=0; row=0; col=0
         if method=="Gradiente de neurona":
@@ -351,7 +420,8 @@ with upload_tab:
         st.info("Primero entrená una red. Para fotos de animales elegí el preset Animales CIFAR-10 y entrenalo.")
     else:
         latest=st.session_state.runs[-1]
-        st.info(f"Red activa: entrenamiento #{st.session_state.get('completed_runs',len(st.session_state.runs))} · {latest['config']['dataset']} · mejor checkpoint época {latest['best_epoch']} · {len(latest['data'].names)} clases")
+        st.caption(f"Red activa: entrenamiento #{st.session_state.get('completed_runs',len(st.session_state.runs))} · {latest['config']['dataset']} · mejor checkpoint época {latest['best_epoch']} · {len(latest['data'].names)} clases")
+        section("Probar sin entrenar","PNG, JPEG o WebP · hasta 10 MB y 16 MP. Se usa el último checkpoint completado.")
         uploaded=st.file_uploader("Imagen PNG, JPEG o WebP · hasta 10 MB / 16 MP",type=["png","jpg","jpeg","webp"],key="inference_upload")
         expected=st.selectbox("Clase real esperada (opcional)",["Desconocida / fuera de las clases"]+latest["data"].names,key="expected_upload")
         if uploaded:
@@ -373,5 +443,11 @@ with upload_tab:
         st.caption("Preprocesado: convertir a RGB o gris según la red, redimensionar bilineal sin recorte a su resolución, dividir por 255 y aplicar media/desvío de su train. No hay augmentation ni ajustes con esta imagen. En Digits se respeta la escala [0,1]; conviene fondo negro y trazos claros.")
 
 with study_tab:
-    st.markdown(Path("GUIA_ESTUDIO.md").read_text())
+    st.header("Guía de estudio")
+    st.caption("Una pregunta → una variable → evidencia. Primero el recorrido corto; después fórmulas y límites.")
+    guide=Path("GUIA_ESTUDIO.md").read_text()
+    intro,details=guide.split("## Cómo atraviesa la red una imagen",1)
+    st.markdown(intro)
+    with st.expander("Conceptos, fórmulas y experimentos",expanded=False):
+        st.markdown("## Cómo atraviesa la red una imagen"+details)
     st.download_button("Descargar guía de estudio",Path("GUIA_ESTUDIO.md").read_text(),"guia-cnn.md","text/markdown")
