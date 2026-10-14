@@ -98,6 +98,7 @@ def test_latest_frozen_run_and_state_unchanged(animals):
     old={'model':CNN(Config()),'data':old_data,'config':Config().dict(),'best_epoch':1}
     config=Config(dataset='CIFAR10Animals')
     model=CNN(config); model.train()
+    model.classifier.eval()
     latest={'model':model,'data':animals,'config':copy.deepcopy(config.dict()),'best_epoch':3}
     state=copy.deepcopy(model.state_dict())
     content=encode(Image.fromarray(np.rint(display_image(animals.images[0])*255).astype('uint8')))
@@ -106,7 +107,7 @@ def test_latest_frozen_run_and_state_unchanged(animals):
     assert result['best_epoch']==3 and result['run_number']==2
     assert result['probabilities'].shape==(6,)
     assert np.isclose(result['probabilities'].sum(),1)
-    assert model.training
+    assert model.training and not model.classifier.training
     for key,value in state.items(): assert torch.equal(value,model.state_dict()[key])
     assert all(parameter.grad is None for parameter in model.parameters())
 
@@ -121,3 +122,20 @@ def test_app_switch_animals_preview_empty_upload():
     assert any('Primero entrená' in value.value for value in at.info)
     architecture=at.dataframe[0].value
     assert architecture.iloc[-1]['salida']=='6'
+
+
+def test_app_animal_training_rgb_rendering(animals):
+    from pathlib import Path
+    from streamlit.testing.v1 import AppTest
+    at=AppTest.from_file(Path(__file__).resolve().parents[1]/'app.py').run(timeout=30)
+    at.selectbox(key='cfg_dataset').set_value('CIFAR10Animals').run(timeout=30)
+    at.number_input(key='cfg_samples').set_value(300)
+    at.number_input(key='cfg_epochs').set_value(1)
+    next(button for button in at.button if button.label=='Entrenar CNN').click()
+    at.run(timeout=60)
+    assert not at.exception
+    run=at.session_state['runs'][-1]
+    assert run['probabilities'].shape==(200,6)
+    assert run['data'].images.shape[1:]==(3,32,32)
+    assert any('6 clases' in value.value for value in at.info)
+    assert any('clasificador cerrado' in value.value.lower() for value in at.warning)

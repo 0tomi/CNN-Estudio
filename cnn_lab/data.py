@@ -77,14 +77,21 @@ def prepare(config):
         sources = [("train", int(i)) for i in train_idx] + [("test", int(i)) for i in test_idx]
     x = torch.tensor(images)
     x = x.permute(0, 3, 1, 2).contiguous() if x.ndim == 4 else x.unsqueeze(1)
-    if x.shape[1] == 1:
-        # Retain scalar metadata compatibility for older grayscale checkpoints.
-        mean = float(x[train].mean()) if config.normalize else 0.
-        std = max(float(x[train].std()), 1e-6) if config.normalize else 1.
-    else:
-        mean = x[train].mean((0, 2, 3), keepdim=True) if config.normalize else torch.zeros(1, x.shape[1], 1, 1)
-        std = x[train].std((0, 2, 3), keepdim=True).clamp_min(1e-6) if config.normalize else torch.ones(1, x.shape[1], 1, 1)
+    mean, std = training_statistics(x, train, config.normalize)
     return Data(x, torch.tensor(labels, dtype=torch.long), train, val, test, mean, std, names, sources)
+
+
+def training_statistics(images, indices, normalize=True):
+    if images.shape[1] == 1:
+        # Retain scalar metadata compatibility for older grayscale checkpoints.
+        mean = float(images[indices].mean()) if normalize else 0.
+        std = max(float(images[indices].std()), 1e-6) if normalize else 1.
+    else:
+        # Float64 accumulation avoids amplifying mean-rounding errors in constant channels.
+        train_pixels = images[indices].double() if normalize else None
+        mean = train_pixels.mean((0, 2, 3), keepdim=True).float() if normalize else torch.zeros(1, images.shape[1], 1, 1)
+        std = train_pixels.std((0, 2, 3), keepdim=True).clamp_min(1e-6).float() if normalize else torch.ones(1, images.shape[1], 1, 1)
+    return mean, std
 
 
 def augment(x, generator=None):

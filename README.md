@@ -48,7 +48,7 @@ Las pruebas cubren tamaño/RF, configuraciones inválidas, splits/normalización
 
 `cnn_lab/model.py` configura y valida la CNN; `data.py` prepara splits/transformaciones; `training.py` entrena y elige checkpoint; `metrics.py` evalúa; `explain.py` produce atribuciones; `app.py` presenta el cuaderno.
 
-Límites: 1–3 bloques, 1–3 convoluciones por bloque, canales ≤64, MLP ≤256, 30 épocas y 2M parámetros. Las operaciones son síncronas, sin controles ficticios de pausa. BatchNorm con mapas 1×1 y un último batch de una muestra se rechaza con instrucciones para cambiar batch size, muestras o arquitectura. «GEA» requiere precisar el método; se implementan Grad-CAM y sensibilidad de neurona, sin llamarlos GEA. Mapas Digits son de baja resolución y no prueban causalidad.
+Límites: 1–3 bloques, 1–3 convoluciones por bloque, canales ≤64, MLP de 0–5 capas ocultas, ≤256 neuronas por capa, 30 épocas y 2M parámetros. Las operaciones son síncronas, sin controles ficticios de pausa. BatchNorm con mapas 1×1 y un último batch de una muestra se rechaza con instrucciones para cambiar batch size, muestras o arquitectura. Mapas Digits son de baja resolución y no prueban causalidad.
 
 **Rollback:** este laboratorio es una unidad independiente; retirar `app.py`, `cnn_lab/`, tests, documentación, `pyproject.toml`, `uv.lock` y `.streamlit/` elimina su comportamiento sin afectar otros proyectos.
 
@@ -64,7 +64,7 @@ Se conservan sólo los IDs CIFAR-10 **2, 3, 4, 5, 6, 7**, remapeados a **pájaro
 
 Este es un **clasificador cerrado**, no un detector de animales desconocidos: siempre elige una clase aprendida. Una foto fuera de dominio puede recibir alta confianza incorrecta; softmax no garantiza corrección. CIFAR-10 es más difícil que Digits y unas pocas épocas/subconjuntos no garantizan buena precisión.
 
-Los nuevos checkpoints incluyen `format_version=2`, `input_shape`, clases y estadísticas RGB tensoriales `(1,C,1,1)`. Los checkpoints grises anteriores conservan sus estadísticas escalares y siguen reconstruyéndose con `CNN(Config.from_dict(payload['config']))`; para archivos v2 también podés usar los valores de `input_shape` explícitamente. La UI importa configuración JSON, **no pesos externos**.
+Los nuevos checkpoints incluyen `format_version=3`, `input_shape`, clases y estadísticas RGB tensoriales `(1,C,1,1)`. Los checkpoints grises anteriores conservan sus estadísticas escalares y siguen reconstruyéndose con `CNN(Config.from_dict(payload['config']))`; para archivos v2/v3 también podés usar los valores de `input_shape` explícitamente. La UI importa configuración JSON, **no pesos externos**.
 
 Pruebas adicionales (mocks sin descargas) y smoke de integración explícito:
 
@@ -75,3 +75,43 @@ uv run python smoke_animals.py
 ```
 
 Referencias: [torchvision CIFAR10](https://docs.pytorch.org/vision/stable/generated/torchvision.datasets.CIFAR10.html), [dataset original](https://www.cs.toronto.edu/~kriz/cifar.html).
+
+
+## Capas densas: la MLP también tiene ocultas
+
+En **Arquitectura**, elegí la profundidad **0–5 capas densas ocultas** y configurá cada una: neuronas, activación, dropout y bias. La capa densa de salida se agrega siempre aparte: **6 logits** para animales o **10 logits** para los otros datasets. No agrega softmax antes de CrossEntropyLoss.
+
+Ejemplo animales: `Flatten/GAP → Dense128/ReLU/dropout0.2 → Dense64/GELU/dropout0.1 → Dense6 (logits)`. Son **2 capas ocultas + 1 capa de salida**, no una MLP sin ocultas. Profundidad 0: sólo la salida lineal sobre las características de la CNN. La tabla y diagrama muestran cada operación y la entrada/salida de las densas.
+
+Configuración nueva canónica: `dense: [{"units":128,"activation":"relu","dropout":0.2,"bias":true}, ...]`. JSON/checkpoints antiguos con `hidden`, `activation` y `dropout` globales se migran automáticamente a capas individuales conservando sus valores. Los nuevos exports no mantienen esos campos redundantes. Checkpoint v3 conserva orden/nombres de parámetros de la base, estadísticas y shape; v1/v2 siguen reconstruibles mediante `Config.from_dict`.
+
+**Presets de configuración** son recetas, no modelos preentrenados: cargar reemplaza arquitectura, hiperparámetros y dataset del editor, no modelos/resultados anteriores. Inicializamos pesos aleatorios sólo al entrenar. El expander del sidebar explica exactamente cada preset.
+
+## Validación K-fold sin tocar test
+
+En **Entrenamiento → Validación K-fold estratificada** elegí K=2/3/5 y épocas por fold. El botón inicia **K entrenamientos independientes**, así que cuesta aproximadamente K veces un entrenamiento. No se ejecuta automáticamente.
+
+- Usa solamente el pool de desarrollo: train + validación originales. Test conserva sus índices y **no se predice ni se calcula ninguna métrica test** en esta acción.
+- Cada muestra de desarrollo pertenece a validación una vez; las proporciones de clases se conservan aproximadamente.
+- Cada fold reinicia modelo/optimizador y tiene semilla registrada. Su media/desvío se calculan sólo con train de ese fold; augmentation sólo allí.
+- Muestra métricas macro por fold, mejor loss/época de validación, curvas/trazas y media/desvío entre folds (**ddof=1**, no intervalo de confianza). Descargá CSV o JSON con configuración, índices y logs.
+- Se conserva sólo el último resultado K-fold y ningún modelo de fold; no reemplaza la última CNN para **Probar imagen**. Tras comparar, entrená normalmente la configuración elegida.
+
+Se elige checkpoint con validación del mismo fold: es un procedimiento práctico de estudio, **no nested CV** ni una estimación totalmente libre de sesgo de selección. No uses test para elegir K, épocas o arquitectura.
+
+```bash
+# Tres folds × dos épocas, Digits offline; sin evaluar test:
+uv run python smoke_kfold.py
+```
+
+Referencias: [StratifiedKFold](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.StratifiedKFold.html), [validación cruzada](https://scikit-learn.org/stable/modules/cross_validation.html).
+
+## Arquitectura interactiva: capas y neuronas
+
+En **Arquitectura → Vista del diagrama** hay tres vistas Plotly locales:
+
+- **Bloques CNN + MLP:** esquema vertical legible de entrada, bloques convolucionales, Flatten/GAP, densas ocultas y logits; formas y parámetros reales.
+- **Operaciones detalladas:** todas las convoluciones, BN, activaciones, pooling y operaciones de la MLP. El panel vertical se desplaza sin reducir tipografía. Hover muestra kernel/stride/padding, formas, parámetros y RF cuando tiene sentido.
+- **Neuronas de la MLP:** puntos por unidad y conexiones densas. Hasta **12 unidades representativas** por vector/oculta, con índices reales y total explícito; todas las clases de salida. Las neuronas omitidas también existen y tienen conexiones. Activación/dropout se anotan, no agregan neuronas.
+
+Arrastrá para mover, rueda para zoom y barra del gráfico para restaurar vista/descargar PNG. Los nodos de bloques representan operaciones, no cada neurona. La CNN se resume en un vector en la vista MLP: **no se afirma que las convoluciones sean fully connected**. Son esquemas funcionales, no ubicación física de memoria/GPU. No requieren servicios ni scripts CDN adicionales.

@@ -8,10 +8,12 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import torch
-from cnn_lab.model import Config, Block, Conv, CNN, ACTIVATIONS, DATASET_SPECS, dataset_spec
+from cnn_lab.model import Config, Block, Conv, CNN, DenseLayer, ACTIVATIONS, DATASET_SPECS, dataset_spec
 from cnn_lab.data import prepare, augment, display_image
 from cnn_lab.inference import classify_latest
 from cnn_lab.training import train
+from cnn_lab.cross_validation import cross_validate
+from cnn_lab.visualization import architecture_figure, neuron_figure
 from cnn_lab.metrics import evaluate
 from cnn_lab.explain import explain, feature_maps
 
@@ -30,14 +32,14 @@ if "base" not in st.session_state: st.session_state.base=Config().dict()
 base = Config.from_dict(st.session_state.base)
 
 with st.sidebar:
-    st.header("Tu experimento")
-    preset=st.selectbox("Punto de partida",["CNN base","Sin pooling","Promedio global","Sobreajuste","Con augmentation","Animales CIFAR-10"])
-    if st.button("Cargar preset"):
+    st.header("Presets de configuración")
+    preset=st.selectbox("Configuración inicial",["CNN base","Sin pooling","Promedio global","Sobreajuste","Con augmentation","Animales CIFAR-10"])
+    if st.button("Cargar configuración"):
         c=Config()
         if preset=="Sin pooling":
             for b in c.blocks: b.pooling="none"
-        elif preset=="Promedio global": c.head="gap"; c.hidden=[]
-        elif preset=="Sobreajuste": c.samples=300; c.dropout=0; c.epochs=25; c.hidden=[128,64]
+        elif preset=="Promedio global": c.head="gap"; c.dense=[]
+        elif preset=="Sobreajuste": c.samples=300; c.epochs=25; c.dense=[DenseLayer(128,dropout=0),DenseLayer(64,dropout=0)]
         elif preset=="Con augmentation": c.augment=True
         elif preset=="Animales CIFAR-10": c.dataset="CIFAR10Animals"; c.samples=3000; c.epochs=10
         st.session_state.base=c.dict()
@@ -45,6 +47,9 @@ with st.sidebar:
         for key in list(st.session_state):
             if key.startswith("cfg_"): del st.session_state[key]
         st.rerun()
+    st.caption("Son recetas de arquitectura e hiperparámetros, NO redes preentrenadas. Cargar reemplaza el editor (incluye dataset), no tus resultados anteriores. Los pesos se inicializan al azar al entrenar.")
+    with st.expander("Qué carga cada preset"):
+        st.markdown("**CNN base:** Digits, 2 bloques (16→32), max-pool, densa64/ReLU/dropout0.1, Adam0.003, 8 épocas.\n\n**Sin pooling:** base sin pooling. **Promedio global:** base con GAP y sin ocultas. **Sobreajuste:** Digits300, densas128→64 sin dropout, 25 épocas. **Con augmentation:** base + affine. **Animales CIFAR-10:** RGB, 3000 muestras, 10 épocas, resto de la base.")
     upload=st.file_uploader("Importar configuración JSON",type="json")
     if upload and st.button("Aplicar JSON"):
         try:
@@ -55,7 +60,7 @@ with st.sidebar:
             st.rerun()
         except (ValueError,TypeError,KeyError,json.JSONDecodeError) as e: st.error(f"JSON inválido: {e}")
     st.divider()
-    st.caption("Digits funciona sin internet. MNIST y FashionMNIST se descargan sólo cuando los elegís.")
+    st.caption("Digits funciona sin internet. MNIST, FashionMNIST y CIFAR-10 se descargan al preparar datos o entrenar.")
     st.caption("Entrenamiento síncrono: progreso real por batch; no hay pausa/reanudación. No cambies controles mientras entrena.")
 
 training_tab,arch_tab,data_tab,explain_tab,test_tab,upload_tab,study_tab=st.tabs(["01 · Entrenamiento","02 · Arquitectura","03 · Datos","04 · Interpretabilidad","05 · Test","06 · Probar imagen","07 · Guía de estudio"])
@@ -73,7 +78,7 @@ with arch_tab:
     cols=st.columns(3)
     with cols[0]: count=number("Bloques convolucionales",1,3,len(base.blocks),"blocks")
     with cols[1]: head=select("Reducción final",["flatten","gap"],base.head,"head")
-    with cols[2]: hidden_count=number("Capas ocultas MLP",0,2,len(base.hidden),"hidden_count")
+    with cols[2]: hidden_count=number("Capas densas ocultas · profundidad",0,5,len(base.dense),"hidden_count")
     blocks=[]
     for i in range(count):
         b=base.blocks[i] if i<len(base.blocks) else Block()
@@ -95,12 +100,19 @@ with arch_tab:
                 with cols[4]: dilation=select("Dilatación",[1,2],l.dilation,f"{i}_{j}_d")
                 layers.append(Conv(channels,kernel,stride,padding,dilation))
             blocks.append(Block(layers,bn,activation,pool,ps))
-    cols=st.columns(4)
-    hidden=[]
+    st.subheader("MLP · capas densas ocultas y salida")
+    st.caption("Una MLP puede tener varias capas ocultas. Cada densa tiene sus propios pesos, activación y dropout. La salida final es otra capa densa: un logit por clase, sin softmax antes de CrossEntropyLoss.")
+    dense=[]
     for i in range(hidden_count):
-        with cols[i]: hidden.append(number(f"MLP {i+1} · neuronas",4,256,base.hidden[i] if i<len(base.hidden) else 64,f"h{i}"))
-    with cols[2]: mlp_act=select("Activación MLP",list(ACTIVATIONS),base.activation,"mlp_act")
-    with cols[3]: dropout=number("Dropout MLP",0.,.7,base.dropout,"dropout",.05)
+        layer=base.dense[i] if i<len(base.dense) else DenseLayer()
+        with st.expander(f"Densa oculta {i+1}",expanded=True):
+            cols=st.columns(4)
+            with cols[0]: units=number("Neuronas / unidades",4,256,layer.units,f"dense_units_{i}")
+            with cols[1]: act=select("Activación de esta capa",list(ACTIVATIONS),layer.activation,f"dense_activation_{i}")
+            with cols[2]: drop=number("Dropout de esta capa",0.,.7,layer.dropout,f"dense_dropout_{i}",.05)
+            with cols[3]: bias=check("Bias / sesgo",layer.bias,f"dense_bias_{i}")
+            dense.append(DenseLayer(units,act,drop,bias))
+    if not dense: st.caption("Sin ocultas: Flatten/GAP → capa densa de salida. Es un clasificador lineal sobre las características convolucionales.")
 
 with data_tab:
     st.header("Datos pequeños, preguntas grandes")
@@ -134,7 +146,7 @@ with training_tab:
         with cols[1]: momentum=number("Momentum (SGD)",0.,.99,base.momentum,"momentum",.05)
         with cols[2]: seed=number("Semilla",0,2**32-1,base.seed,"seed")
 
-config=Config(blocks,head,hidden,mlp_act,dropout,dataset,samples,seed,epochs,batch_size,optimizer,lr,wd,momentum,augmentation,normalize)
+config=Config(blocks=blocks,head=head,dense=dense,dataset=dataset,samples=samples,seed=seed,epochs=epochs,batch_size=batch_size,optimizer=optimizer,lr=lr,weight_decay=wd,momentum=momentum,augment=augmentation,normalize=normalize)
 valid=True
 try:
     preview=CNN(config)
@@ -144,12 +156,21 @@ except (ValueError,RuntimeError) as e:
 with arch_tab:
     if valid:
         st.metric("Parámetros entrenables",f"{sum(p.numel() for p in preview.parameters()):,}")
-        st.dataframe(pd.DataFrame(preview.rows).astype({"RF teórico":str,"salto":str}),hide_index=True,width="stretch")
-        names=[f"Imagen {dataset_spec(dataset)[1]} × {dataset_spec(dataset)[0]} × {dataset_spec(dataset)[0]}"]+[r["capa"]+" / "+r["salida"] for r in preview.rows]
-        graph='digraph {rankdir=LR; node [shape=box, style=filled, fillcolor="#E3EDE8", fontname="Helvetica"]; '
-        graph+='; '.join(f'n{i} [label={json.dumps(name)}]' for i,name in enumerate(names))+'; '
-        graph+='; '.join(f'n{i} -> n{i+1}' for i in range(len(names)-1))+'}'
-        st.graphviz_chart(graph)
+        st.dataframe(pd.DataFrame(preview.rows).fillna("—").astype({"RF teórico":str,"salto":str}),hide_index=True,width="stretch")
+        st.subheader("Arquitectura · nodos y conexiones")
+        diagram_view=st.radio("Vista del diagrama",["Bloques CNN + MLP","Operaciones detalladas","Neuronas de la MLP"],horizontal=True,key="architecture_view")
+        figure=neuron_figure(preview) if diagram_view=="Neuronas de la MLP" else architecture_figure(preview,detailed=diagram_view=="Operaciones detalladas")
+        st.caption("Arrastrá para mover, usá la rueda para zoom y pasá el cursor sobre un nodo para inspeccionarlo. La barra superior permite restaurar la vista y descargar PNG. Los diagramas son esquemas funcionales, no posiciones físicas de memoria/GPU.")
+        if figure.layout.height>650:
+            st.caption("Diagrama vertical: desplazá este panel para recorrer todas las capas sin achicar sus etiquetas.")
+            with st.container(height=650,border=False):
+                st.plotly_chart(figure,width="stretch",config={"scrollZoom":True,"displayModeBar":True,"displaylogo":False},key="architecture_plot")
+        else:
+            st.plotly_chart(figure,width="stretch",config={"scrollZoom":True,"displayModeBar":True,"displaylogo":False},key="architecture_plot")
+        if diagram_view=="Neuronas de la MLP":
+            st.caption("Cada punto representa una unidad real seleccionada de esa capa (índice en tooltip). Mostramos hasta 12 por capa oculta/vector, con el total real; mostramos TODAS las clases de salida. Las líneas son conexiones densas entre unidades mostradas: existen también conexiones a unidades omitidas. Activación y dropout no agregan neuronas. La CNN se resume en su vector de características; sus convoluciones NO son fully connected. Softmax se usa sólo al mostrar probabilidades, no como capa antes de CrossEntropyLoss.")
+        else:
+            st.caption("Nodos = bloques u operaciones, no neuronas individuales. Conexiones = flujo de datos. Colores: entrada gris · conv teal · activación terracota · BN/dropout ocre · pooling verde · vector azul gris · densa azul · logits rosa oscuro. Cambiá a Neuronas de la MLP para ver conectividad densa.")
         st.caption("RF teórico mide extensión en píxeles de entrada; incluye padding y puede superar la imagen. No equivale a sensibilidad efectiva.")
     st.download_button("Exportar configuración JSON",json.dumps(config.dict(),indent=2),"cnn-config.json","application/json")
 
@@ -179,9 +200,9 @@ with training_tab:
                 chart.line_chart(pd.DataFrame(history).set_index("epoch")[["train_loss","val_loss"]])
         try:
             run=train(copy.deepcopy(config),callback)
+            st.session_state.completed_runs = st.session_state.get("completed_runs", len(st.session_state.runs)) + 1
             st.session_state.runs.append(run)
             st.session_state.runs=st.session_state.runs[-6:]
-            st.session_state.completed_runs = st.session_state.get("completed_runs", 0) + 1
             st.success(f"Entrenamiento finalizado. Mejor checkpoint: época {run['best_epoch']} por menor loss de validación.")
         except Exception as e: st.error(f"Entrenamiento detenido: {e}")
     if not st.session_state.runs: st.info("Empezá con CNN base + Digits + 8 épocas. Antes de entrenar, predecí qué cambiará si quitás el pooling.")
@@ -192,7 +213,7 @@ if st.session_state.runs:
         run_labels=[f"{i+1} · {r['config']['dataset']} / {r['config']['optimizer']}" for i,r in enumerate(st.session_state.runs)]
         selected=st.selectbox("Experimento para inspeccionar",list(range(len(run_labels))),index=len(run_labels)-1,format_func=lambda i:run_labels[i])
         run=st.session_state.runs[selected]
-        if run["config"]!=config.dict(): st.warning("Los controles actuales no coinciden con este experimento. Los resultados y mapas usan su configuración congelada, no los controles editados.")
+        if Config.from_dict(run["config"]).dict()!=config.dict(): st.warning("Los controles actuales no coinciden con este experimento. Los resultados y mapas usan su configuración congelada, no los controles editados.")
         st.json(run["config"],expanded=False)
         cols=st.columns(2)
         h=pd.DataFrame(run["history"]).set_index("epoch")
@@ -205,9 +226,51 @@ if st.session_state.runs:
         st.download_button("Descargar logs CSV",pd.DataFrame(run["batches"]).to_csv(index=False),"batches.csv","text/csv")
         st.download_button("Descargar épocas CSV",pd.DataFrame(run["history"]).to_csv(index=False),"epochs.csv","text/csv")
         buffer=io.BytesIO()
-        torch.save({"format_version":2,"input_shape":list(run["data"].images.shape[1:]),"source_indices":run["data"].source_indices,"state_dict":run["model"].state_dict(),"config":run["config"],"mean":run["data"].mean,"std":run["data"].std,"classes":run["data"].names,"best_epoch":run["best_epoch"],"split_indices":{"train":run["data"].train.tolist(),"val":run["data"].val.tolist(),"test":run["data"].test.tolist()},"history":run["history"]},buffer)
+        torch.save({"format_version":3,"input_shape":list(run["data"].images.shape[1:]),"source_indices":run["data"].source_indices,"state_dict":run["model"].state_dict(),"config":Config.from_dict(run["config"]).dict(),"mean":run["data"].mean,"std":run["data"].std,"classes":run["data"].names,"best_epoch":run["best_epoch"],"split_indices":{"train":run["data"].train.tolist(),"val":run["data"].val.tolist(),"test":run["data"].test.tolist()},"history":run["history"]},buffer)
         st.download_button("Descargar checkpoint + metadatos",buffer.getvalue(),"cnn-best.pt","application/octet-stream")
         st.caption("Historial: últimos 6 experimentos de esta sesión en memoria. Descargá artefactos antes de cerrar/reiniciar. Checkpoint para inferencia, no para reanudar optimizer.")
+
+with training_tab:
+    st.divider()
+    st.subheader("Validación K-fold estratificada")
+    st.write("Repartí el conjunto de desarrollo (train + validación originales) en K folds. Cada muestra valida exactamente una vez. Test queda separado y nunca se evalúa en esta acción.")
+    cols=st.columns(2)
+    with cols[0]: cv_k=st.selectbox("Cantidad de folds K",[2,3,5],index=1,key="cv_k")
+    with cols[1]: cv_epochs=st.number_input("Épocas por fold",1,30,min(epochs,3),key="cv_epochs")
+    st.caption(f"Coste: {cv_k} entrenamientos independientes × {cv_epochs} épocas = {cv_k*cv_epochs} épocas en CPU. Se carga el dataset una vez; en datasets no cacheados puede descargarse. Cada fold crea pesos y optimizador nuevos. No reemplaza la última CNN para Probar imagen; no guarda modelos de folds ni crea un ensemble.")
+    cv_progress=st.empty(); cv_live=st.empty(); cv_chart=st.empty()
+    if st.button("Ejecutar validación K-fold",disabled=not valid):
+        def cv_callback(fold,trace,history,batches,total):
+            cv_progress.progress(((fold-1)*cv_epochs*total+(trace["epoch"]-1)*total+trace["batch"])/(cv_k*cv_epochs*total))
+            cv_live.caption(f"Fold {fold}/{cv_k} · época {trace['epoch']}/{cv_epochs} · batch {trace['batch']}/{total} · loss {trace['loss']:.4f}")
+            if history and (trace.get("epoch_complete") or trace["batch"]%5==0):
+                cv_chart.line_chart(pd.DataFrame(history).set_index("epoch")[["train_loss","val_loss"]])
+        try:
+            st.session_state.cv_result=cross_validate(config,cv_k,cv_epochs,cv_callback)
+            st.success("K-fold finalizado. Test no fue evaluado; los entrenamientos normales anteriores siguen intactos.")
+        except Exception as error: st.error(f"K-fold detenido: {error}")
+    if "cv_result" in st.session_state:
+        cv=st.session_state.cv_result
+        if cv["config"]!={**config.dict(),"epochs":cv_epochs} or cv["k"]!=cv_k:
+            st.warning("Los controles actuales no coinciden con esta validación K-fold. Se muestran los resultados de su configuración congelada.")
+        st.caption(f"Resultado guardado: K={cv['k']} · {cv['epochs']} épocas/fold · {cv['elapsed']:.1f}s · {len(cv['heldout_test_indices'])} ejemplos test reservados sin evaluar")
+        columns=["fold","seed","train_count","val_count","accuracy","precision","recall","f1","val_loss","best_epoch","elapsed"]
+        table=pd.DataFrame(cv["folds"])[columns]
+        st.dataframe(table,hide_index=True,width="stretch")
+        summary=pd.DataFrame(cv["aggregate"]).T.rename(columns={"mean":"media","std":"desvío entre folds"})
+        st.dataframe(summary,width="stretch")
+        st.caption("Precision/recall/F1 macro. Desvío estándar muestral entre folds (ddof=1); no es un intervalo de confianza ni una medida de incertidumbre por imagen. Loss corresponde al mejor checkpoint de cada fold.")
+        with st.expander("Curvas por fold, traza y configuración congelada"):
+            st.json(cv["config"],expanded=False)
+            for fold in cv["folds"]:
+                st.markdown(f"**Fold {fold['fold']} · seed {fold['seed']}**")
+                cols=st.columns(2)
+                frame=pd.DataFrame(fold["history"]).set_index("epoch")
+                cols[0].line_chart(frame[["train_loss","val_loss"]]); cols[1].line_chart(frame[["train_accuracy","val_accuracy"]])
+                st.line_chart(pd.DataFrame(fold["batches"]).set_index("step")[["loss"]])
+        st.download_button("Descargar resultados K-fold CSV",table.to_csv(index=False),"kfold-resultados.csv","text/csv")
+        st.download_button("Descargar K-fold completo JSON",json.dumps(cv,indent=2),"kfold-config-logs.json","application/json")
+    st.caption("Cada fold calcula normalización sólo con su train; augmentation sólo allí. Seleccionamos checkpoint con validación del mismo fold: es una validación práctica, no nested CV ni una estimación totalmente libre de selección. Usá estos resultados para comparar configuraciones, luego entrená una CNN normal para inferencia y reservá test para la evaluación final.")
 
 with test_tab:
     st.header("Generalización, no memorización")
@@ -239,7 +302,6 @@ with test_tab:
 
 with explain_tab:
     st.header("Qué ve la red y a qué es sensible")
-    st.info("Implementado: Grad-CAM y gradiente de una neurona respecto a la entrada (campo receptivo efectivo local). «GEA» es ambiguo: no se afirma implementar un algoritmo con ese nombre.")
     if run is None: st.caption("Los filtros, mapas y atribuciones estarán disponibles tras entrenar.")
     else:
         model=run["model"]; d=run["data"]

@@ -1,5 +1,5 @@
 """Configurable CNN with explicit shape and receptive-field bookkeeping."""
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, InitVar
 import math
 import torch
 from torch import nn
@@ -21,12 +21,17 @@ class Block:
     pool_size: int = 2
 
 @dataclass
+class DenseLayer:
+    units: int = 64
+    activation: str = "relu"
+    dropout: float = 0.1
+    bias: bool = True
+
+@dataclass
 class Config:
     blocks: list[Block] = field(default_factory=lambda: [Block(), Block([Conv(32)])])
     head: str = "flatten"
-    hidden: list[int] = field(default_factory=lambda: [64])
-    activation: str = "relu"
-    dropout: float = 0.1
+    dense: list[DenseLayer] | None = None
     dataset: str = "Digits"
     samples: int = 1797
     seed: int = 42
@@ -39,6 +44,18 @@ class Config:
     augment: bool = False
     normalize: bool = True
 
+    # Input-only compatibility: canonical exports contain only per-layer dense settings.
+    hidden: InitVar[list[int] | None] = None
+    activation: InitVar[str | None] = None
+    dropout: InitVar[float | None] = None
+
+    def __post_init__(self, hidden, activation, dropout):
+        if self.dense is None:
+            widths = [64] if hidden is None else hidden
+            self.dense = [DenseLayer(width, "relu" if activation is None else activation, .1 if dropout is None else dropout) for width in widths]
+        elif any(value is not None for value in (hidden, activation, dropout)):
+            raise ValueError("Usá dense por capa o configuración MLP antigua, no ambas a la vez.")
+
     def dict(self):
         return asdict(self)
 
@@ -46,6 +63,10 @@ class Config:
     def from_dict(cls, data):
         data = dict(data)
         data["blocks"] = [Block(**{**b, "layers": [Conv(**c) for c in b["layers"]]}) for b in data["blocks"]]
+        if "dense" in data and data["dense"] is not None:
+            data["dense"] = [DenseLayer(**layer) for layer in data["dense"]]
+            for key in ("hidden", "activation", "dropout"):
+                data.pop(key, None)
         return cls(**data)
 
 DATASET_SPECS = {"Digits": (8, 1, 10), "MNIST": (28, 1, 10), "FashionMNIST": (28, 1, 10), "CIFAR10Animals": (32, 3, 6)}
@@ -56,18 +77,21 @@ def dataset_spec(name):
 ACTIVATIONS = {"relu": nn.ReLU, "leakyrelu": nn.LeakyReLU, "gelu": nn.GELU, "tanh": nn.Tanh}
 
 def validate(c):
-    if not 1 <= len(c.blocks) <= 3 or not 0 <= len(c.hidden) <= 2:
-        raise ValueError("Usá 1–3 bloques y 0–2 capas ocultas.")
+    if not 1 <= len(c.blocks) <= 3 or not isinstance(c.dense, list) or not 0 <= len(c.dense) <= 5:
+        raise ValueError("Usá 1–3 bloques y 0–5 capas densas ocultas.")
     if c.dataset not in DATASET_SPECS or c.head not in ("flatten", "gap"):
         raise ValueError("Dataset o salida no reconocido.")
-    if c.activation not in ACTIVATIONS or c.optimizer not in ("Adam", "AdamW", "SGD"):
+    if c.optimizer not in ("Adam", "AdamW", "SGD"):
         raise ValueError("Activación u optimizador no reconocido.")
     if not (1 <= c.epochs <= 30 and c.batch_size in (16,32,64,128,256) and 200 <= c.samples <= 10000):
         raise ValueError("Límites: 1–30 épocas, batch 16/32/64/128/256 y 200–10000 muestras.")
-    if not (0 < c.lr <= .1 and 0 <= c.dropout <= .7 and 0 <= c.weight_decay <= .1 and 0 <= c.momentum < 1):
+    if not (0 < c.lr <= .1 and 0 <= c.weight_decay <= .1 and 0 <= c.momentum < 1):
         raise ValueError("Hiperparámetros fuera de rango seguro.")
-    if not isinstance(c.seed, int) or not 0 <= c.seed < 2**32 or any(not isinstance(n,int) or not 4 <= n <= 256 for n in c.hidden):
+    if not isinstance(c.seed, int) or not 0 <= c.seed < 2**32:
         raise ValueError("Semilla o neuronas inválidas.")
+    for layer in c.dense:
+        if not isinstance(layer, DenseLayer) or not isinstance(layer.units, int) or isinstance(layer.units, bool) or not 4 <= layer.units <= 256 or not isinstance(layer.activation, str) or layer.activation not in ACTIVATIONS or not isinstance(layer.bias, bool) or not isinstance(layer.dropout, (int, float)) or isinstance(layer.dropout, bool) or not 0 <= layer.dropout <= .7:
+            raise ValueError("Capa densa inválida: 4–256 neuronas, activación válida, dropout 0–0.7 y bias booleano.")
     for b in c.blocks:
         if not 1 <= len(b.layers) <= 3 or b.activation not in ACTIVATIONS or b.pooling not in ("none","max","avg") or b.pool_size not in (2,3):
             raise ValueError("Configuración de bloque inválida.")
@@ -121,14 +145,18 @@ class CNN(nn.Module):
         head += [nn.Flatten()]
         self.rows.append({"capa":"flatten","salida":str(ch if config.head == "gap" else ch*spatial*spatial),"parámetros":0,"RF teórico":"—","salto":"—"})
         n = ch if config.head == "gap" else ch*spatial*spatial
-        for index,width in enumerate([*config.hidden,num_classes]):
-            linear = nn.Linear(n,width)
-            head.append(linear)
-            self.rows.append({"capa":"logits" if index==len(config.hidden) else "lineal","salida":str(width),"parámetros":sum(p.numel() for p in linear.parameters()),"RF teórico":"global","salto":"—"})
-            n = width
-            if index < len(config.hidden):
-                head += [ACTIVATIONS[config.activation](),nn.Dropout(config.dropout)]
-                self.rows.extend([{ "capa":config.activation+" MLP", "salida":str(width),"parámetros":0,"RF teórico":"global","salto":"—"},{"capa":f"dropout p={config.dropout}","salida":str(width),"parámetros":0,"RF teórico":"global","salto":"—"}])
+        for index, layer in enumerate(config.dense, 1):
+            linear = nn.Linear(n, layer.units, bias=layer.bias)
+            head += [linear, ACTIVATIONS[layer.activation](), nn.Dropout(layer.dropout)]
+            self.rows.extend([
+                {"capa":f"densa oculta {index}","entrada":str(n),"salida":str(layer.units),"parámetros":sum(p.numel() for p in linear.parameters()),"RF teórico":"global","salto":"—"},
+                {"capa":f"{layer.activation} MLP {index}","salida":str(layer.units),"parámetros":0,"RF teórico":"global","salto":"—"},
+                {"capa":f"dropout {index} p={layer.dropout}","salida":str(layer.units),"parámetros":0,"RF teórico":"global","salto":"—"},
+            ])
+            n = layer.units
+        output = nn.Linear(n, num_classes)
+        head.append(output)
+        self.rows.append({"capa":"salida · logits","entrada":str(n),"salida":str(num_classes),"parámetros":sum(p.numel() for p in output.parameters()),"RF teórico":"global","salto":"—"})
         self.classifier = nn.Sequential(*head)
         if sum(p.numel() for p in self.parameters()) > 2_000_000:
             raise ValueError("La red supera 2 millones de parámetros; reducí canales/MLP o usá GAP.")

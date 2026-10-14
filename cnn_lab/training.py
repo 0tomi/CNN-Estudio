@@ -18,9 +18,9 @@ def predict(model,data,indices):
     logits = torch.cat([model(batch) for batch in data.normalized(indices).split(256)])
     return logits.softmax(1).numpy(),logits
 
-def train(config, callback=None):
+def train(config, callback=None, *, data=None, evaluate_test=True):
     seed_all(config.seed)
-    data = prepare(config)
+    data = prepare(config) if data is None else data
     model = CNN(config,data.images.shape[-1],data.images.shape[1],len(data.names))
     if len(data.train) % config.batch_size == 1 and any("_bn" in row["capa"] and row["salida"].endswith("× 1 × 1") for row in model.rows):
         raise ValueError("BatchNorm en mapas 1×1 no puede entrenar con el último batch de una muestra. Cambiá batch size/cantidad de muestras, quitá BatchNorm de ese bloque o reducí pooling.")
@@ -54,5 +54,5 @@ def train(config, callback=None):
             best_loss,best_epoch,best = val_loss,epoch,copy.deepcopy(model.state_dict())
         if callback: callback({**trace,"epoch_complete":True},history,batches,len(loader))
     model.load_state_dict(best); model.eval()
-    probabilities,_ = predict(model,data,data.test)
-    return {"config":copy.deepcopy(config.dict()),"model":model,"data":data,"history":history,"batches":batches,"probabilities":probabilities,"best_epoch":best_epoch,"elapsed":time.monotonic()-start}
+    probabilities,_ = predict(model,data,data.test if evaluate_test else data.val)
+    return {"config":copy.deepcopy(config.dict()),"model":model,"data":data,"history":history,"batches":batches,"probabilities":probabilities,"best_epoch":best_epoch,"elapsed":time.monotonic()-start,"evaluation_split":"test" if evaluate_test else "validation"}

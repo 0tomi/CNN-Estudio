@@ -6,5 +6,6 @@ secondaryBackgroundColor = "#EDEBE3"
 textColor = "#253836"
 [server]
 headless = true
+maxUploadSize = 10
 [browser]
 gatherUsageStats = false

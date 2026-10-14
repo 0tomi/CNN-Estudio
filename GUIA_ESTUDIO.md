@@ -77,7 +77,7 @@ Divisiones sin positivos predichos se reportan como 0 en precision/F1. ROC es in
 
 **Filtros** son pesos aprendidos. **Mapas** son respuestas a esta entrada. **Grad-CAM** pondera mapas por gradientes del logit objetivo y conserva contribuciones positivas. **Gradiente de neurona** mide la sensibilidad absoluta de una unidad convolucional preactivación a cada píxel. No son la misma técnica ni una explicación causal.
 
-«GEA» no identifica aquí un método inequívoco. Este laboratorio implementa los dos métodos anteriores sin atribuirles ese nombre. Los mapas se normalizan para visualización; un mapa constante/cero se informa explícitamente. En Digits, 8×8 y dos poolings producen mapas muy pequeños: MNIST/Fashion permiten ver más detalle.
+Los mapas se normalizan para visualización; un mapa constante/cero se informa explícitamente. En Digits, 8×8 y dos poolings producen mapas muy pequeños: MNIST/Fashion permiten ver más detalle.
 
 ## Preguntas para el examen
 
@@ -91,7 +91,7 @@ Divisiones sin positivos predichos se reportan como 0 en precision/F1. ROC es in
 
 ## Límites y próximos experimentos
 
-Todo corre en CPU y se limita a 3 bloques, 64 canales por conv, 2 capas ocultas, 30 épocas y 2 millones de parámetros. El entrenamiento es síncrono, sin pausa/reanudación. El historial vive en la sesión; descargá CSV/JSON/checkpoint. Para estudiar mañana priorizá hipótesis y comparación controlada antes que una red grande.
+Todo corre en CPU y se limita a 3 bloques, 64 canales por conv, 5 capas densas ocultas, 30 épocas y 2 millones de parámetros. El entrenamiento es síncrono, sin pausa/reanudación. El historial vive en la sesión; descargá CSV/JSON/checkpoint. Para estudiar mañana priorizá hipótesis y comparación controlada antes que una red grande.
 
 ## Fuentes para profundizar
 
@@ -114,3 +114,28 @@ El preset **Animales CIFAR-10** usa RGB 32×32 y 6 clases: pájaro, gato, ciervo
 La clasificación usa el **último entrenamiento completado**, no el antiguo seleccionado para comparación ni la configuración actualmente editada. Usa su checkpoint elegido con validación y su preprocesado congelado. No hay aprendizaje con las imágenes subidas. Orientación EXIF y transparencia se resuelven antes de convertir/redimensionar; las imágenes no se recortan automáticamente al animal.
 
 [Dataset oficial CIFAR-10 y lista de clases](https://www.cs.toronto.edu/~kriz/cifar.html) · [torchvision CIFAR10](https://docs.pytorch.org/vision/stable/generated/torchvision.datasets.CIFAR10.html).
+
+
+## MLP profunda: ocultas versus salida
+
+Una **MLP** puede tener una o varias capas densas ocultas; no es sólo la salida. En este laboratorio podés configurar cada oculta (hasta 5): neuronas, activación, dropout y sesgo. La densa de salida fija un logit por clase y no se cuenta entre las ocultas.
+
+Ejemplo: `CNN → Flatten → 128/ReLU/dropout0.2 → 64/GELU/dropout0.1 → 6 logits`. Hay **2 ocultas y 1 salida**, tres capas densas con pesos. Sin ocultas, `CNN → GAP → 6 logits` es una salida lineal sobre los mapas ya transformados por la CNN. Aumentar profundidad sin activaciones no crea la misma capacidad no lineal.
+
+**Experimento:** compará ocultas0, 64 y 128→64 con la misma CNN. Medí parámetros, loss train/val y sensibilidad al dropout por capa. ¿Mayor capacidad mejora validación o sólo memorización?
+
+Los presets son **configuraciones iniciales**, no redes con pesos aprendidos. Elegir/cargar un preset no entrena ni borra runs anteriores; reemplaza el editor. Los pesos se inicializan aleatoriamente al entrenar.
+
+## K-fold estratificado: una validación menos dependiente del split
+
+Se divide **desarrollo** (train + validación originales) en K partes con proporciones de clase similares. Para cada fold se entrena desde cero en K−1 partes y valida en la restante. Cada muestra de desarrollo valida **una vez**. Test permanece separado y no se evalúa al ejecutar K-fold.
+
+1. Probá K=3 y 2 épocas por fold en Digits. Son **3 redes independientes × 2 épocas**, no una red que continúa seis épocas.
+2. Compará accuracy/F1 macro y loss de los tres folds. La media resume resultados; el desvío muestral (ddof=1) expresa variación entre folds, **no un intervalo de confianza** ni incertidumbre por imagen.
+3. Cada fold aprende normalización sólo en sus K−1 partes de train y aplica augmentation sólo allí. Llevar estadísticas de todo desarrollo a cada fold filtraría información.
+4. Reiniciamos pesos y optimizador por fold. No se mezclan estados de Adam ni se reutiliza el mejor modelo del fold anterior.
+5. Elegí la configuración con desarrollo y luego entrená una CNN normal para usarla en **Probar imagen**. K-fold no conserva redes de folds ni cambia la última CNN entrenada normalmente.
+
+Aquí el mejor checkpoint también se selecciona con la validación del mismo fold. Es una evaluación práctica para estudiar: **no nested CV** ni estimación completamente libre del sesgo de elegir época/hiperparámetros. Repetir búsqueda puede sobreajustar desarrollo; reservá test para el final. K debe ser menor o igual al soporte mínimo de clases en desarrollo.
+
+[StratifiedKFold oficial](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.StratifiedKFold.html) · [Guía de validación cruzada](https://scikit-learn.org/stable/modules/cross_validation.html).

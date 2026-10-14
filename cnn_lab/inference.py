@@ -47,7 +47,7 @@ def classify_latest(runs, content):
     run = runs[-1]
     original, raw, normalized = preprocess_image(content, run["data"])
     model = run["model"]
-    training = model.training
+    training_modes = {module: module.training for module in model.modules()}
     try:
         model.eval()
         with torch.no_grad():
@@ -58,4 +58,5 @@ def classify_latest(runs, content):
                 "prediction": int(probabilities.argmax()), "names": run["data"].names,
                 "config": run["config"], "best_epoch": run["best_epoch"], "run_number": len(runs)}
     finally:
-        model.train(training)
+        for module, training in training_modes.items():
+            module.training = training
