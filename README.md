@@ -159,3 +159,13 @@ El transporte administrado usa URL y MD5 de metadatos oficiales torchvision, ver
 Una conexión externa lenta sigue siendo lenta: la mejora aporta feedback/límites/cache seguro, no promete acelerar el servidor de origen. No cierres procesos ajenos para sustituir una descarga en curso.
 
 `tests/live_browser_fixture.py` es **sólo una prueba**: servidor aislado8502 con demoras de preparación/validación para fotografiar estados intermedios. El comando normal sigue siendo `uv run streamlit run app.py`; producción no agrega sleeps.
+
+## Interpretar varias imágenes y capas
+
+En **Interpretabilidad**, la galería muestra **10 imágenes de test por página** con etiqueta real, predicción y probabilidad softmax del experimento seleccionado. **Anterior / Siguiente** seleccionan la primera imagen de la nueva página; pulsar **Imagen N** actualiza el detalle y sus mapas. No descarga datos ni entrena. La selección y los mapas se reinician al cambiar de experimento; subir imágenes sigue usando el último entrenamiento completado, no el seleccionado para comparar.
+
+- **Grad-CAM:** muestra todas las convoluciones (no sólo un mapa por bloque), para la misma imagen y clase. Predicción es el objetivo inicial; también podés explicar la etiqueta real u otra clase. Un único forward y cálculo de gradientes produce todos los mapas, con caché acotado a la última imagen/clase/experimento.
+- **Activación por canal:** secciones separadas para cada convolución; grupos de8 permiten inspeccionar todos los canales. Son salidas crudas pre-BN/pre-activación, no atribuciones de clase.
+- **Inspección detallada:** conserva filtros aprendidos y sensibilidad de una neurona con canal/fila/columna.
+
+Cada CAM/canal tiene escala propia: colores parecidos **no** comparan magnitudes entre capas. Un CAM cero/constante se indica explícitamente y no pinta una falsa zona caliente. La base se amplía por vecino más cercano; el CAM se interpola bilinealmente. Atribución no es causalidad ni garantía de clasificación correcta.

@@ -41,3 +41,7 @@ button:focus-visible,input:focus-visible,[role="combobox"]:focus-visible {outlin
   [data-testid="stTabs"] [role="tablist"] {gap:.8rem;}
   .st-key-launch_panel {padding:1rem;}
 }
+/* Gallery remains two usable thumbnails per row on narrow screens. */
+@media (max-width:640px) {
+  .st-key-interpret_gallery [data-testid="stColumn"] {min-width:calc(50% - .5rem)!important; width:calc(50% - .5rem)!important; flex:1 1 calc(50% - .5rem)!important;}
+}

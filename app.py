@@ -402,47 +402,8 @@ with explain_tab:
     st.header("Qué ve la red y a qué es sensible")
     if run is None: st.caption("Los filtros, mapas y atribuciones estarán disponibles tras entrenar.")
     else:
-        model=run["model"]; d=run["data"]
-        section("Muestra, capa y objetivo","Elegí qué entrada y clase querés analizar antes de interpretar el mapa.")
-        cols=st.columns(3)
-        with cols[0]: sample=st.number_input("Índice de muestra test",0,len(d.test)-1,0)
-        with cols[1]: layer=st.selectbox("Capa convolucional",model.conv_names())
-        with cols[2]: target=st.selectbox("Clase objetivo",list(range(len(d.names))),format_func=lambda i:d.names[i])
-        index=d.test[sample]; x=d.normalized([index]); maps=feature_maps(model,x,layer)
-        st.caption(f"Etiqueta real: {d.names[int(d.labels[index])]} · mapas: {maps.shape[0]} × {maps.shape[1]} × {maps.shape[2]}")
-        section("Método de atribución","Grad-CAM explica un logit; el gradiente de neurona mide sensibilidad local de una unidad.")
-        method=st.radio("Atribución",["Grad-CAM","Gradiente de neurona"],horizontal=True)
-        channel=0; row=0; col=0
-        if method=="Gradiente de neurona":
-            cols=st.columns(3)
-            channel=cols[0].number_input("Canal",0,maps.shape[0]-1,0)
-            row=cols[1].number_input("Fila",0,maps.shape[1]-1,0)
-            col=cols[2].number_input("Columna",0,maps.shape[2]-1,0)
-        result=explain(model,x,layer,target,channel,row,col,"gradcam" if method=="Grad-CAM" else "neuron")
-        cols=st.columns([1,2])
-        cols[0].image(display_image(d.images[index]),caption="Entrada original",clamp=True)
-        original=display_image(d.images[index])
-        fig=go.Figure(go.Image(z=(original*255).astype(np.uint8))) if original.ndim==3 else go.Figure(go.Heatmap(z=original,colorscale="Greys",showscale=False))
-        fig.add_trace(go.Heatmap(z=result["heat"],colorscale="YlOrRd",opacity=.55,zmin=0,zmax=1))
-        fig.update_layout(yaxis_autorange="reversed",yaxis_scaleanchor="x",height=360)
-        cols[1].plotly_chart(fig,width="stretch")
-        if result["constant"]: st.warning("Mapa constante/cero: no hay contraste de atribución en este punto. No implica que todos los píxeles sean igualmente importantes.")
-        st.bar_chart(pd.DataFrame({"probabilidad":result["probabilities"]},index=d.names))
-        st.caption("Grad-CAM usa gradientes del logit de la clase elegida; el gradiente de neurona usa la salida pre-BN/pre-activación de esta convolución. Es sensibilidad local, no prueba causal. Atribuciones 8×8 son muy gruesas.")
-        with st.expander("Mapas de características (hasta 16 canales)",expanded=True):
-            cols=st.columns(8)
-            for i,feature in enumerate(maps[:16]):
-                lo,hi=feature.min(),feature.max(); image=(feature-lo)/(hi-lo) if hi>lo else np.zeros_like(feature)
-                cols[i%8].image(image,caption=f"Canal {i}",clamp=True)
-            st.caption("Cada mapa se escala por separado: colores similares no significan amplitudes iguales.")
-        with st.expander("Filtros aprendidos (hasta 16)"):
-            weights=model.features.get_submodule(layer).weight.detach().numpy()
-            input_channel=st.number_input("Canal de entrada del filtro",0,weights.shape[1]-1,0)
-            cols=st.columns(8)
-            for i,w in enumerate(weights[:16,input_channel]):
-                span=max(float(abs(w).max()),1e-9)
-                cols[i%8].image((w/span+1)/2,caption=f"Filtro {i}",clamp=True)
-            st.caption("Gris medio = 0; claro = positivo; oscuro = negativo. Escala simétrica por filtro.")
+        from cnn_lab.interpretability import render_interpretability
+        render_interpretability(run)
 
 with upload_tab:
     st.header("Clasificá una imagen nueva")
