@@ -1,0 +1,315 @@
+"""A local scientific notebook, backed by real CPU training."""
+import io
+import json
+import copy
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+import torch
+from cnn_lab.model import Config, Block, Conv, CNN, ACTIVATIONS, DATASET_SPECS, dataset_spec
+from cnn_lab.data import prepare, augment, display_image
+from cnn_lab.inference import classify_latest
+from cnn_lab.training import train
+from cnn_lab.metrics import evaluate
+from cnn_lab.explain import explain, feature_maps
+
+st.set_page_config(page_title="CNN · Cuaderno experimental",layout="wide")
+st.markdown("""<style>
+h1,h2,h3 {font-family: Georgia, serif; font-weight:500!important; letter-spacing:-.025em;}
+.block-container {padding-top:2rem; max-width:1440px;}
+[data-testid='stMetric'] {border-top:1px solid #b8c7c0; padding-top:12px;}
+.stCaption {color:#46635d;}
+</style>""",unsafe_allow_html=True)
+st.caption("LABORATORIO 01 / INTELIGENCIA ARTIFICIAL / CPU LOCAL")
+st.title("Entender una CNN, experimento a experimento.")
+st.write("Configurá una red pequeña, observá cómo aprende y contrastá tus hipótesis con evidencia.")
+if "runs" not in st.session_state: st.session_state.runs=[]
+if "base" not in st.session_state: st.session_state.base=Config().dict()
+base = Config.from_dict(st.session_state.base)
+
+with st.sidebar:
+    st.header("Tu experimento")
+    preset=st.selectbox("Punto de partida",["CNN base","Sin pooling","Promedio global","Sobreajuste","Con augmentation","Animales CIFAR-10"])
+    if st.button("Cargar preset"):
+        c=Config()
+        if preset=="Sin pooling":
+            for b in c.blocks: b.pooling="none"
+        elif preset=="Promedio global": c.head="gap"; c.hidden=[]
+        elif preset=="Sobreajuste": c.samples=300; c.dropout=0; c.epochs=25; c.hidden=[128,64]
+        elif preset=="Con augmentation": c.augment=True
+        elif preset=="Animales CIFAR-10": c.dataset="CIFAR10Animals"; c.samples=3000; c.epochs=10
+        st.session_state.base=c.dict()
+        # Clear editable widget state so the loaded preset takes effect.
+        for key in list(st.session_state):
+            if key.startswith("cfg_"): del st.session_state[key]
+        st.rerun()
+    upload=st.file_uploader("Importar configuración JSON",type="json")
+    if upload and st.button("Aplicar JSON"):
+        try:
+            c=Config.from_dict(json.load(upload)); CNN(c)
+            st.session_state.base=c.dict()
+            for key in list(st.session_state):
+                if key.startswith("cfg_"): del st.session_state[key]
+            st.rerun()
+        except (ValueError,TypeError,KeyError,json.JSONDecodeError) as e: st.error(f"JSON inválido: {e}")
+    st.divider()
+    st.caption("Digits funciona sin internet. MNIST y FashionMNIST se descargan sólo cuando los elegís.")
+    st.caption("Entrenamiento síncrono: progreso real por batch; no hay pausa/reanudación. No cambies controles mientras entrena.")
+
+training_tab,arch_tab,data_tab,explain_tab,test_tab,upload_tab,study_tab=st.tabs(["01 · Entrenamiento","02 · Arquitectura","03 · Datos","04 · Interpretabilidad","05 · Test","06 · Probar imagen","07 · Guía de estudio"])
+
+def select(label,options,value,key):
+    return st.selectbox(label,options,index=options.index(value),key="cfg_"+key)
+def number(label,lo,hi,value,key,step=1):
+    return st.number_input(label,min_value=lo,max_value=hi,value=value,step=step,key="cfg_"+key)
+def check(label,value,key):
+    return st.checkbox(label,value=value,key="cfg_"+key)
+
+with arch_tab:
+    st.header("Bloques, mapas y decisiones")
+    st.caption("Cada convolución → BatchNorm opcional → activación. Pooling al final del bloque. La salida tiene un logit por clase (6 animales o 10 clases), no probabilidades.")
+    cols=st.columns(3)
+    with cols[0]: count=number("Bloques convolucionales",1,3,len(base.blocks),"blocks")
+    with cols[1]: head=select("Reducción final",["flatten","gap"],base.head,"head")
+    with cols[2]: hidden_count=number("Capas ocultas MLP",0,2,len(base.hidden),"hidden_count")
+    blocks=[]
+    for i in range(count):
+        b=base.blocks[i] if i<len(base.blocks) else Block()
+        with st.expander(f"Bloque {i+1}",expanded=True):
+            cols=st.columns(5)
+            with cols[0]: n=number("Convoluciones",1,3,len(b.layers),f"{i}_n")
+            with cols[1]: bn=check("BatchNorm",b.batchnorm,f"{i}_bn")
+            with cols[2]: activation=select("Activación",list(ACTIVATIONS),b.activation,f"{i}_act")
+            with cols[3]: pool=select("Pooling",["none","max","avg"],b.pooling,f"{i}_pool")
+            with cols[4]: ps=select("Tamaño pool",[2,3],b.pool_size,f"{i}_ps")
+            layers=[]
+            for j in range(n):
+                l=b.layers[j] if j<len(b.layers) else Conv(b.layers[-1].channels)
+                cols=st.columns(5)
+                with cols[0]: channels=number(f"Conv {j+1} · canales",1,64,l.channels,f"{i}_{j}_ch")
+                with cols[1]: kernel=select("Kernel",[1,3,5],l.kernel,f"{i}_{j}_k")
+                with cols[2]: stride=select("Stride",[1,2],l.stride,f"{i}_{j}_s")
+                with cols[3]: padding=number("Padding",0,2,l.padding,f"{i}_{j}_p")
+                with cols[4]: dilation=select("Dilatación",[1,2],l.dilation,f"{i}_{j}_d")
+                layers.append(Conv(channels,kernel,stride,padding,dilation))
+            blocks.append(Block(layers,bn,activation,pool,ps))
+    cols=st.columns(4)
+    hidden=[]
+    for i in range(hidden_count):
+        with cols[i]: hidden.append(number(f"MLP {i+1} · neuronas",4,256,base.hidden[i] if i<len(base.hidden) else 64,f"h{i}"))
+    with cols[2]: mlp_act=select("Activación MLP",list(ACTIVATIONS),base.activation,"mlp_act")
+    with cols[3]: dropout=number("Dropout MLP",0.,.7,base.dropout,"dropout",.05)
+
+with data_tab:
+    st.header("Datos pequeños, preguntas grandes")
+    cols=st.columns(4)
+    def dataset_changed():
+        if st.session_state.cfg_dataset == "CIFAR10Animals": st.session_state.cfg_samples = 3000
+    with cols[0]: dataset=st.selectbox("Dataset",list(DATASET_SPECS),index=list(DATASET_SPECS).index(base.dataset),key="cfg_dataset",format_func=lambda name:"CIFAR-10 · solo animales" if name=="CIFAR10Animals" else name,on_change=dataset_changed)
+    with cols[1]: samples=number("Máximo de muestras",200,10000,base.samples,"samples",100)
+    with cols[2]: normalize=check("Normalizar con estadísticas de train",base.normalize,"normalize")
+    with cols[3]: augmentation=check("Augmentation sólo en train",base.augment,"augment")
+    st.markdown("""| Dataset | Escala | Qué permite aprender |
+|---|---|---|
+| **Digits** | 1797 imágenes de 8×8, offline | Iteración rápida, kernels, pooling y métricas |
+| **MNIST** | 28×28, subconjunto configurable | Bordes, formas y campos receptivos más legibles |
+| **FashionMNIST** | 28×28, subconjunto configurable | Clases más ambiguas; errores y generalización |
+| **CIFAR-10 · solo animales** | RGB 32×32, 6 clases | Pájaro, gato, ciervo, perro, rana y caballo; fotos más difíciles |""")
+    if dataset == "CIFAR10Animals":
+        st.caption("Se filtran IDs originales 2–7 antes del muestreo: no se entrenan vehículos. El archivo fuente completo (~163 MB) se descarga una vez y queda en data/. 3000 muestras seleccionadas ≈500 por clase ANTES de reservar 20% de validación: ≈400 train y 100 val por clase. Test se toma sólo del test oficial de animales.")
+    st.info("Digits: 70% train / 15% validación / 15% test, estratificados y disjuntos. MNIST/Fashion/CIFAR: test oficial independiente; 80/20 dentro del subconjunto oficial de entrenamiento. Nunca se calcula media/desvío sobre test.")
+
+with training_tab:
+    st.header("Observá el aprendizaje")
+    cols=st.columns(4)
+    with cols[0]: epochs=number("Épocas",1,30,base.epochs,"epochs")
+    with cols[1]: batch_size=select("Batch size",[16,32,64,128,256],base.batch_size,"batch_size")
+    with cols[2]: optimizer=select("Optimizador",["Adam","AdamW","SGD"],base.optimizer,"optimizer")
+    with cols[3]: lr=number("Learning rate",.00001,.1,base.lr,"lr",.001)
+    with st.expander("Regularización y reproducibilidad"):
+        cols=st.columns(3)
+        with cols[0]: wd=number("Weight decay",0.,.1,base.weight_decay,"wd",.001)
+        with cols[1]: momentum=number("Momentum (SGD)",0.,.99,base.momentum,"momentum",.05)
+        with cols[2]: seed=number("Semilla",0,2**32-1,base.seed,"seed")
+
+config=Config(blocks,head,hidden,mlp_act,dropout,dataset,samples,seed,epochs,batch_size,optimizer,lr,wd,momentum,augmentation,normalize)
+valid=True
+try:
+    preview=CNN(config)
+except (ValueError,RuntimeError) as e:
+    valid=False
+    with arch_tab: st.error(str(e))
+with arch_tab:
+    if valid:
+        st.metric("Parámetros entrenables",f"{sum(p.numel() for p in preview.parameters()):,}")
+        st.dataframe(pd.DataFrame(preview.rows).astype({"RF teórico":str,"salto":str}),hide_index=True,width="stretch")
+        names=[f"Imagen {dataset_spec(dataset)[1]} × {dataset_spec(dataset)[0]} × {dataset_spec(dataset)[0]}"]+[r["capa"]+" / "+r["salida"] for r in preview.rows]
+        graph='digraph {rankdir=LR; node [shape=box, style=filled, fillcolor="#E3EDE8", fontname="Helvetica"]; '
+        graph+='; '.join(f'n{i} [label={json.dumps(name)}]' for i,name in enumerate(names))+'; '
+        graph+='; '.join(f'n{i} -> n{i+1}' for i in range(len(names)-1))+'}'
+        st.graphviz_chart(graph)
+        st.caption("RF teórico mide extensión en píxeles de entrada; incluye padding y puede superar la imagen. No equivale a sensibilidad efectiva.")
+    st.download_button("Exportar configuración JSON",json.dumps(config.dict(),indent=2),"cnn-config.json","application/json")
+
+with data_tab:
+    if st.button("Preparar y visualizar datos",disabled=not valid):
+        try:
+            with st.spinner("Preparando dataset…"): st.session_state.preview_data=prepare(config)
+        except Exception as e: st.error(f"No se pudo preparar el dataset: {e}. Elegí Digits para trabajar offline.")
+    if "preview_data" in st.session_state:
+        d=st.session_state.preview_data
+        st.caption(f"Última preparación: {len(d.train)} train / {len(d.val)} val / {len(d.test)} test · μ={np.asarray(d.mean).reshape(-1).round(4).tolist()}, σ={np.asarray(d.std).reshape(-1).round(4).tolist()}")
+        raw=d.images[d.train[:6]]
+        changed=augment(raw,torch.Generator().manual_seed(seed))
+        cols=st.columns(6)
+        for i,col in enumerate(cols):
+            col.image(display_image(raw[i]),caption=f"Original · {d.names[int(d.labels[d.train[i]])]}",clamp=True)
+            col.image(display_image(changed[i]),caption="Affine pequeño",clamp=True)
+        st.caption("Vista ilustrativa de augmentation (rotación ±7.5°, traslación ±7.5%). Sólo se aplica al entrenar si está activado. Se transforma antes de normalizar; BatchNorm actúa dentro de la red, no reemplaza este paso.")
+
+with training_tab:
+    progress=st.empty(); live=st.empty(); chart=st.empty()
+    if st.button("Entrenar CNN",type="primary",disabled=not valid):
+        def callback(trace,history,batches,total):
+            progress.progress(((trace["epoch"]-1)*total+trace["batch"])/(epochs*total))
+            live.caption(f'Época {trace["epoch"]}/{epochs} · batch {trace["batch"]}/{total} · loss {trace["loss"]:.4f} · {trace["elapsed"]:.1f}s')
+            if history and (trace.get("epoch_complete") or trace["batch"]%5==0):
+                chart.line_chart(pd.DataFrame(history).set_index("epoch")[["train_loss","val_loss"]])
+        try:
+            run=train(copy.deepcopy(config),callback)
+            st.session_state.runs.append(run)
+            st.session_state.runs=st.session_state.runs[-6:]
+            st.session_state.completed_runs = st.session_state.get("completed_runs", 0) + 1
+            st.success(f"Entrenamiento finalizado. Mejor checkpoint: época {run['best_epoch']} por menor loss de validación.")
+        except Exception as e: st.error(f"Entrenamiento detenido: {e}")
+    if not st.session_state.runs: st.info("Empezá con CNN base + Digits + 8 épocas. Antes de entrenar, predecí qué cambiará si quitás el pooling.")
+
+run=None
+if st.session_state.runs:
+    with training_tab:
+        run_labels=[f"{i+1} · {r['config']['dataset']} / {r['config']['optimizer']}" for i,r in enumerate(st.session_state.runs)]
+        selected=st.selectbox("Experimento para inspeccionar",list(range(len(run_labels))),index=len(run_labels)-1,format_func=lambda i:run_labels[i])
+        run=st.session_state.runs[selected]
+        if run["config"]!=config.dict(): st.warning("Los controles actuales no coinciden con este experimento. Los resultados y mapas usan su configuración congelada, no los controles editados.")
+        st.json(run["config"],expanded=False)
+        cols=st.columns(2)
+        h=pd.DataFrame(run["history"]).set_index("epoch")
+        cols[0].line_chart(h[["train_loss","val_loss"]]); cols[1].line_chart(h[["train_accuracy","val_accuracy"]])
+        st.caption("Train se mide durante actualizaciones, con dropout/augmentation activos; validación se mide al final en eval. No son condiciones idénticas.")
+        with st.expander("Traza real batch a batch"):
+            st.line_chart(pd.DataFrame(run["batches"]).set_index("step")[["loss"]]); st.dataframe(run["batches"],hide_index=True)
+        comparison=[{"experimento":i+1,"dataset":r["config"]["dataset"],"optimizador":r["config"]["optimizer"],"mejor época":r["best_epoch"],"mín loss val":min(x["val_loss"] for x in r["history"]),"segundos":r["elapsed"]} for i,r in enumerate(st.session_state.runs)]
+        st.dataframe(comparison,hide_index=True)
+        st.download_button("Descargar logs CSV",pd.DataFrame(run["batches"]).to_csv(index=False),"batches.csv","text/csv")
+        st.download_button("Descargar épocas CSV",pd.DataFrame(run["history"]).to_csv(index=False),"epochs.csv","text/csv")
+        buffer=io.BytesIO()
+        torch.save({"format_version":2,"input_shape":list(run["data"].images.shape[1:]),"source_indices":run["data"].source_indices,"state_dict":run["model"].state_dict(),"config":run["config"],"mean":run["data"].mean,"std":run["data"].std,"classes":run["data"].names,"best_epoch":run["best_epoch"],"split_indices":{"train":run["data"].train.tolist(),"val":run["data"].val.tolist(),"test":run["data"].test.tolist()},"history":run["history"]},buffer)
+        st.download_button("Descargar checkpoint + metadatos",buffer.getvalue(),"cnn-best.pt","application/octet-stream")
+        st.caption("Historial: últimos 6 experimentos de esta sesión en memoria. Descargá artefactos antes de cerrar/reiniciar. Checkpoint para inferencia, no para reanudar optimizer.")
+
+with test_tab:
+    st.header("Generalización, no memorización")
+    if run is None: st.info("Entrená primero. Test permanece fuera de las actualizaciones y de la selección del checkpoint.")
+    else:
+        d=run["data"]; probabilities=run["probabilities"]; labels=d.labels[d.test].numpy(); m=evaluate(labels,probabilities)
+        st.caption(f"Evaluación del mejor checkpoint (época {run['best_epoch']}) sobre {len(labels)} ejemplos held-out.")
+        cols=st.columns(5)
+        for col,key in zip(cols,["accuracy","precision","recall","f1","auc"]): col.metric(key.upper()+ (" macro" if key not in ("accuracy",) else ""),f"{m[key]:.3f}" if m[key] is not None else "Indefinido")
+        st.dataframe(pd.DataFrame(m["per_class"],index=d.names))
+        normalized=st.checkbox("Normalizar matriz por clase real")
+        cm=m["confusion"].astype(float)
+        if normalized: cm=np.divide(cm,cm.sum(1,keepdims=True),out=np.zeros_like(cm),where=cm.sum(1,keepdims=True)!=0)
+        fig=go.Figure(go.Heatmap(z=cm,x=d.names,y=d.names,colorscale="Teal",text=cm.round(2),texttemplate="%{text}"))
+        fig.update_layout(xaxis_title="Predicción",yaxis_title="Clase real",yaxis_autorange="reversed")
+        st.plotly_chart(fig,width="stretch")
+        fig=go.Figure()
+        for i,(fpr,tpr,score) in m["curves"].items(): fig.add_trace(go.Scatter(x=fpr,y=tpr,name=f"{d.names[i]} · AUC {score:.3f}"))
+        fig.add_trace(go.Scatter(x=[0,1],y=[0,1],name="Azar",line=dict(dash="dash",color="gray")))
+        fig.update_layout(xaxis_title="False positive rate",yaxis_title="True positive rate")
+        st.plotly_chart(fig,width="stretch")
+        st.caption("ROC one-vs-rest: umbrales sobre probabilidades, no sobre etiquetas. AUC macro es promedio de AUC por clase; clases sin positivos/negativos se omiten y su ROC es indefinida.")
+        errors=np.flatnonzero(probabilities.argmax(1)!=labels)
+        st.subheader(f"Galería de errores · {len(errors)}")
+        cols=st.columns(6)
+        for index,i in enumerate(errors[:18]):
+            cols[index%6].image(display_image(d.images[d.test[i]]),caption=f"Real {d.names[labels[i]]} → {d.names[probabilities[i].argmax()]} ({probabilities[i].max():.0%})",clamp=True)
+        st.warning("Si ajustás repetidamente la arquitectura mirando test, deja de ser una evaluación independiente. Decidí con validación; reservá test para el resultado final.")
+
+with explain_tab:
+    st.header("Qué ve la red y a qué es sensible")
+    st.info("Implementado: Grad-CAM y gradiente de una neurona respecto a la entrada (campo receptivo efectivo local). «GEA» es ambiguo: no se afirma implementar un algoritmo con ese nombre.")
+    if run is None: st.caption("Los filtros, mapas y atribuciones estarán disponibles tras entrenar.")
+    else:
+        model=run["model"]; d=run["data"]
+        cols=st.columns(3)
+        with cols[0]: sample=st.number_input("Índice de muestra test",0,len(d.test)-1,0)
+        with cols[1]: layer=st.selectbox("Capa convolucional",model.conv_names())
+        with cols[2]: target=st.selectbox("Clase objetivo",list(range(len(d.names))),format_func=lambda i:d.names[i])
+        index=d.test[sample]; x=d.normalized([index]); maps=feature_maps(model,x,layer)
+        st.caption(f"Etiqueta real: {d.names[int(d.labels[index])]} · mapas: {maps.shape[0]} × {maps.shape[1]} × {maps.shape[2]}")
+        method=st.radio("Atribución",["Grad-CAM","Gradiente de neurona"],horizontal=True)
+        channel=0; row=0; col=0
+        if method=="Gradiente de neurona":
+            cols=st.columns(3)
+            channel=cols[0].number_input("Canal",0,maps.shape[0]-1,0)
+            row=cols[1].number_input("Fila",0,maps.shape[1]-1,0)
+            col=cols[2].number_input("Columna",0,maps.shape[2]-1,0)
+        result=explain(model,x,layer,target,channel,row,col,"gradcam" if method=="Grad-CAM" else "neuron")
+        cols=st.columns([1,2])
+        cols[0].image(display_image(d.images[index]),caption="Entrada original",clamp=True)
+        original=display_image(d.images[index])
+        fig=go.Figure(go.Image(z=(original*255).astype(np.uint8))) if original.ndim==3 else go.Figure(go.Heatmap(z=original,colorscale="Greys",showscale=False))
+        fig.add_trace(go.Heatmap(z=result["heat"],colorscale="YlOrRd",opacity=.55,zmin=0,zmax=1))
+        fig.update_layout(yaxis_autorange="reversed",yaxis_scaleanchor="x",height=360)
+        cols[1].plotly_chart(fig,width="stretch")
+        if result["constant"]: st.warning("Mapa constante/cero: no hay contraste de atribución en este punto. No implica que todos los píxeles sean igualmente importantes.")
+        st.bar_chart(pd.DataFrame({"probabilidad":result["probabilities"]},index=d.names))
+        st.caption("Grad-CAM usa gradientes del logit de la clase elegida; el gradiente de neurona usa la salida pre-BN/pre-activación de esta convolución. Es sensibilidad local, no prueba causal. Atribuciones 8×8 son muy gruesas.")
+        with st.expander("Mapas de características (hasta 16 canales)",expanded=True):
+            cols=st.columns(8)
+            for i,feature in enumerate(maps[:16]):
+                lo,hi=feature.min(),feature.max(); image=(feature-lo)/(hi-lo) if hi>lo else np.zeros_like(feature)
+                cols[i%8].image(image,caption=f"Canal {i}",clamp=True)
+            st.caption("Cada mapa se escala por separado: colores similares no significan amplitudes iguales.")
+        with st.expander("Filtros aprendidos (hasta 16)"):
+            weights=model.features.get_submodule(layer).weight.detach().numpy()
+            input_channel=st.number_input("Canal de entrada del filtro",0,weights.shape[1]-1,0)
+            cols=st.columns(8)
+            for i,w in enumerate(weights[:16,input_channel]):
+                span=max(float(abs(w).max()),1e-9)
+                cols[i%8].image((w/span+1)/2,caption=f"Filtro {i}",clamp=True)
+            st.caption("Gris medio = 0; claro = positivo; oscuro = negativo. Escala simétrica por filtro.")
+
+with upload_tab:
+    st.header("Clasificá una imagen nueva")
+    st.caption("Siempre usa el último entrenamiento completado y su mejor checkpoint de validación. No usa el experimento antiguo seleccionado ni los controles actuales. No entrena con la imagen subida.")
+    if not st.session_state.runs:
+        st.info("Primero entrená una red. Para fotos de animales elegí el preset Animales CIFAR-10 y entrenalo.")
+    else:
+        latest=st.session_state.runs[-1]
+        st.info(f"Red activa: entrenamiento #{st.session_state.get('completed_runs',len(st.session_state.runs))} · {latest['config']['dataset']} · mejor checkpoint época {latest['best_epoch']} · {len(latest['data'].names)} clases")
+        uploaded=st.file_uploader("Imagen PNG, JPEG o WebP · hasta 10 MB / 16 MP",type=["png","jpg","jpeg","webp"],key="inference_upload")
+        expected=st.selectbox("Clase real esperada (opcional)",["Desconocida / fuera de las clases"]+latest["data"].names,key="expected_upload")
+        if uploaded:
+            try:
+                result=classify_latest(st.session_state.runs,uploaded.getvalue())
+                cols=st.columns(2)
+                cols[0].image(result["original"],caption="Original · orientación EXIF aplicada; transparencia sobre blanco",width="stretch")
+                cols[1].image(display_image(result["input"]),caption=f"Entrada efectiva · {list(result['input'].shape)} (C × H × W), luego normalización congelada de train",clamp=True,width=256)
+                predicted=result["names"][result["prediction"]]
+                st.subheader(f"Predicción: {predicted}")
+                probabilities=pd.DataFrame({"clase":result["names"],"probabilidad softmax":result["probabilities"]}).sort_values("probabilidad softmax",ascending=False)
+                st.dataframe(probabilities,hide_index=True,width="stretch")
+                st.bar_chart(probabilities.set_index("clase"),sort=False)
+                if expected != "Desconocida / fuera de las clases":
+                    if expected==predicted: st.success("Coincide con la clase esperada.")
+                    else: st.warning(f"No coincide: esperabas {expected}, predijo {predicted}.")
+            except ValueError as error: st.error(str(error))
+        st.warning("Clasificador cerrado: siempre elige una clase entrenada, incluso si la foto no contiene esos animales. Softmax NO es probabilidad calibrada de acertar ni detector de desconocidos. Las fotos nuevas, fondos y encuadres pueden diferir mucho de CIFAR-10; un gato grande o un animal ajeno puede ser mal clasificado.")
+        st.caption("Preprocesado: convertir a RGB o gris según la red, redimensionar bilineal sin recorte a su resolución, dividir por 255 y aplicar media/desvío de su train. No hay augmentation ni ajustes con esta imagen. En Digits se respeta la escala [0,1]; conviene fondo negro y trazos claros.")
+
+with study_tab:
+    st.markdown(Path("GUIA_ESTUDIO.md").read_text())
+    st.download_button("Descargar guía de estudio",Path("GUIA_ESTUDIO.md").read_text(),"guia-cnn.md","text/markdown")
