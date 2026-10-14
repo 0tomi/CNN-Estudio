@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from torch import nn
 from .data import ANIMAL_NAMES
 
-COLORS = {"entrada":"#647875", "convolución":"#087E83", "normalización":"#8D6A48", "activación":"#A75D42", "pooling":"#618256", "vector":"#66839B", "densa":"#506CB2", "salida":"#9E536B"}
+COLORS = {"entrada":"#647875", "convolución":"#087E83", "normalización":"#8D6A48", "regularización":"#B18C4B", "activación":"#A75D42", "pooling":"#618256", "vector":"#66839B", "densa":"#506CB2", "salida":"#9E536B"}
 
 
 def _kind(name):
@@ -15,7 +15,7 @@ def _kind(name):
     if '_pool' in name or name=='promedio global': return 'pooling'
     if name=='flatten': return 'vector'
     if name.startswith('densa'): return 'densa'
-    if name.startswith('dropout'): return 'normalización'
+    if name.startswith('dropout'): return 'regularización'
     return 'salida'
 
 
@@ -41,7 +41,8 @@ def architecture_nodes(model,detailed=False):
                 layer=model.config.dense[int(name.split()[-1])-1]
                 detail=f'Activación {layer.activation} · dropout {layer.dropout} · bias {layer.bias}'
             elif 'entrada' in row: detail=f"Entrada: {row['entrada']} unidades"
-            nodes.append(_node(name,row['salida'],row['parámetros'],_kind(name),detail,row['RF teórico']))
+            label=f'{name} · {type(module).__name__}' if module is not None else name
+            nodes.append(_node(label,row['salida'],row['parámetros'],_kind(name),detail,row['RF teórico']))
     else:
         for index,block in enumerate(model.config.blocks,1):
             rows=[row for row in model.rows if row['capa'].startswith(f'b{index}_')]
@@ -73,7 +74,7 @@ def architecture_figure(model,detailed=False):
     for node,y in zip(nodes,ys):
         text=f"<b>{html.escape(node['label'])}</b><br>{html.escape(node['shape'])} · {node['parameters']:,} parámetros"
         fig.add_annotation(x=.14,y=y,text=text,showarrow=False,xanchor='left',align='left',font=dict(size=15,color='#253836'))
-    _layout(fig,max(480,count*90+50),[-count+.35,.65],[-.1,1.15])
+    _layout(fig,max(480,count*75+50),[-count+.35,.65],[-.1,1.15])
     fig.update_layout(meta={'view':'operations' if detailed else 'blocks','nodes':nodes,'edge_count':count-1})
     return fig
 
@@ -104,13 +105,13 @@ def neuron_figure(model,cap=12):
         kind='salida' if output else 'vector' if level==0 else 'densa'
         label='Salida · logits' if output else 'Características de Flatten/GAP' if level==0 else f'Densa oculta {level}'
         hover=[f'<b>{label}</b><br>{"Clase: "+html.escape(names[index]) if output else "Índice de unidad: "+str(index)}<br>{len(indices)} mostradas de {size}' for index in indices]
-        fig.add_trace(go.Scatter(x=[p[0] for p in coordinates],y=[p[1] for p in coordinates],mode='markers+text' if output else 'markers',marker=dict(size=25 if output else 21,color=COLORS[kind],line=dict(color='#F7F5EF',width=1.5)),text=[html.escape(names[i]) for i in indices] if output else None,textposition='bottom center',textfont=dict(size=14),hovertext=hover,hovertemplate='%{hovertext}<extra></extra>',name=label))
+        fig.add_trace(go.Scatter(x=[p[0] for p in coordinates],y=[p[1] for p in coordinates],mode='markers+text' if output else 'markers',marker=dict(size=25 if output else 21,color=COLORS[kind],line=dict(color='#F7F5EF',width=1.5)),text=[html.escape(names[i]).replace('/', '/<br>').replace(' ', '<br>') for i in indices] if output else None,textposition='bottom center',textfont=dict(size=14),hovertext=hover,hovertemplate='%{hovertext}<extra></extra>',name=label))
         description=f'<b>{label}</b> · {len(indices)} mostradas de {size}'
         if 0<level<len(sizes)-1:
             layer=model.config.dense[level-1]
             description+=f'<br>{layer.activation} · dropout {layer.dropout} · bias {layer.bias}'
         if len(indices)<size: description+=' · …'
-        fig.add_annotation(x=0,y=coordinates[0][1]+.75,text=description,showarrow=False,font=dict(size=15),align='center')
+        fig.add_annotation(x=0,y=coordinates[0][1]+.75,text=description,showarrow=False,font=dict(size=15),align='center',bgcolor='#F7F5EF',borderpad=4)
     height=max(520,len(sizes)*185)
     _layout(fig,height,[-(len(sizes)-1)*2.4-1,1.4],[-5.1,5.1])
     fig.update_layout(meta={'view':'neurons','actual_sizes':sizes,'shown_indices':shown,'edge_count':sum(len(a)*len(b) for a,b in zip(shown,shown[1:])),'output_classes':names})

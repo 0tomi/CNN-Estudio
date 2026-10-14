@@ -170,7 +170,7 @@ with arch_tab:
         if diagram_view=="Neuronas de la MLP":
             st.caption("Cada punto representa una unidad real seleccionada de esa capa (índice en tooltip). Mostramos hasta 12 por capa oculta/vector, con el total real; mostramos TODAS las clases de salida. Las líneas son conexiones densas entre unidades mostradas: existen también conexiones a unidades omitidas. Activación y dropout no agregan neuronas. La CNN se resume en su vector de características; sus convoluciones NO son fully connected. Softmax se usa sólo al mostrar probabilidades, no como capa antes de CrossEntropyLoss.")
         else:
-            st.caption("Nodos = bloques u operaciones, no neuronas individuales. Conexiones = flujo de datos. Colores: entrada gris · conv teal · activación terracota · BN/dropout ocre · pooling verde · vector azul gris · densa azul · logits rosa oscuro. Cambiá a Neuronas de la MLP para ver conectividad densa.")
+            st.caption("Nodos = bloques u operaciones, no neuronas individuales. Conexiones = flujo de datos de arriba hacia abajo. Colores: entrada gris · conv teal · activación terracota · BN ocre · dropout mostaza · pooling verde · vector azul gris · densa azul · logits rosa oscuro. Cambiá a Neuronas de la MLP para ver conectividad densa.")
         st.caption("RF teórico mide extensión en píxeles de entrada; incluye padding y puede superar la imagen. No equivale a sensibilidad efectiva.")
     st.download_button("Exportar configuración JSON",json.dumps(config.dict(),indent=2),"cnn-config.json","application/json")
 
