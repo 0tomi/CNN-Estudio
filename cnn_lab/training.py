@@ -6,6 +6,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 from .model import CNN, validate
 from .data import prepare, augment
+from .downloads import emit
 
 class EarlyStopping:
     """Track significant validation improvements independently from the absolute best checkpoint."""
@@ -34,10 +35,12 @@ def predict(model,data,indices):
     logits = torch.cat([model(batch) for batch in data.normalized(indices).split(256)])
     return logits.softmax(1).numpy(),logits
 
-def train(config, callback=None, *, data=None, evaluate_test=True):
+def train(config, callback=None, *, data=None, evaluate_test=True, on_event=None):
     validate(config)
     seed_all(config.seed)
-    data = prepare(config) if data is None else data
+    emit(on_event,"preparing",message=f"Preparando {config.dataset}")
+    data = (prepare(config,on_event=on_event) if on_event else prepare(config)) if data is None else data
+    emit(on_event,"initializing",message="Inicializando CNN y optimizador nuevos")
     model = CNN(config,data.images.shape[-1],data.images.shape[1],len(data.names))
     if len(data.train) % config.batch_size == 1 and any("_bn" in row["capa"] and row["salida"].endswith("× 1 × 1") for row in model.rows):
         raise ValueError("BatchNorm en mapas 1×1 no puede entrenar con el último batch de una muestra. Cambiá batch size/cantidad de muestras, quitá BatchNorm de ese bloque o reducí pooling.")
@@ -53,6 +56,7 @@ def train(config, callback=None, *, data=None, evaluate_test=True):
     stop_reason = "max_epochs"
     start = time.monotonic()
     for epoch in range(1,config.epochs+1):
+        emit(on_event,"training",message=f"Entrenando época {epoch}/{config.epochs}",epoch=epoch,max_epochs=config.epochs)
         model.train(); total=correct=seen=0
         for batch,(x,y) in enumerate(loader,1):
             if config.augment: x = augment(x)
@@ -62,9 +66,10 @@ def train(config, callback=None, *, data=None, evaluate_test=True):
             if not torch.isfinite(loss): raise ValueError("Loss no finita. Reducí learning rate.")
             loss.backward(); optimizer.step()
             total += loss.item()*len(y); correct += int((logits.argmax(1)==y).sum()); seen += len(y)
-            trace = {"epoch":epoch,"batch":batch,"step":len(batches)+1,"loss":loss.item(),"accuracy":float((logits.argmax(1)==y).float().mean()),"elapsed":time.monotonic()-start}
+            trace = {"epoch":epoch,"batch":batch,"step":len(batches)+1,"loss":loss.item(),"accuracy":float((logits.argmax(1)==y).float().mean()),"elapsed":time.monotonic()-start,"samples_seen":seen,"train_loss_running":total/seen,"train_accuracy_running":correct/seen}
             batches.append(trace)
             if callback: callback(trace,history,batches,len(loader))
+        emit(on_event,"validation",message=f"Validando época {epoch}",epoch=epoch)
         _,logits = predict(model,data,data.val)
         val_loss = float(loss_fn(logits,data.labels[data.val]))
         if not np.isfinite(val_loss): raise ValueError("Loss de validación no finita. Reducí learning rate.")
@@ -79,5 +84,7 @@ def train(config, callback=None, *, data=None, evaluate_test=True):
         if reached_patience:
             break
     model.load_state_dict(best); model.eval()
+    emit(on_event,"test" if evaluate_test else "validation",message="Evaluando test con el mejor checkpoint" if evaluate_test else "Evaluando validación con el mejor checkpoint")
     probabilities,_ = predict(model,data,data.test if evaluate_test else data.val)
+    emit(on_event,"early_stopped" if len(history)<config.epochs else "completed",message=f"Completadas {len(history)} de {config.epochs} épocas",epochs_completed=len(history),max_epochs=config.epochs,best_epoch=best_epoch,stop_reason=stop_reason)
     return {"config":copy.deepcopy(config.dict()),"model":model,"data":data,"history":history,"batches":batches,"probabilities":probabilities,"best_epoch":best_epoch,"epochs_completed":len(history),"max_epochs":config.epochs,"stopped_early":len(history)<config.epochs,"stop_reason":stop_reason,"elapsed":time.monotonic()-start,"evaluation_split":"test" if evaluate_test else "validation"}

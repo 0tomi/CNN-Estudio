@@ -114,7 +114,8 @@ def test_app_early_toggle_and_real_completion():
     run=at.session_state['runs'][-1]
     assert run['epochs_completed']==3 and run['max_epochs']==8
     assert any('3 de 8' in s.value and 'paciencia' in s.value for s in at.success)
-    assert any('lr 0.00300' in m.value for m in at.markdown)
+    assert any('lr 0.00300' in m.value for m in at.caption)
+    next(b for b in at.button if b.label=='Volver a configuración').click().run(timeout=30)
     at.selectbox(key='cfg_optimizer').set_value('SGD').run(timeout=30)
     assert any(n.key=='cfg_momentum' for n in at.number_input)
     at.number_input(key='cfg_0_0_k').set_value(4).run(timeout=30)

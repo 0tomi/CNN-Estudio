@@ -3,3 +3,9 @@ __pycache__/
 .pytest_cache/
 data/
 *.pt
+
+# Generated browser-test files and screenshots
+/.playwright-cli/
+/artifacts/
+/playwright-report/
+/test-results/

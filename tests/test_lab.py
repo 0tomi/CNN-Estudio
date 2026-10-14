@@ -74,6 +74,7 @@ def test_app_real_training_flow():
     assert not at.exception
     assert len(at.session_state["runs"])==1
     assert len(at.session_state["runs"][0]["history"])==2
+    next(b for b in at.button if b.label=='Volver a configuración').click().run(timeout=30)
     at.number_input(key="cfg_lr").set_value(.01).run(timeout=30)
     assert not at.exception
     assert len(at.session_state["runs"])==1

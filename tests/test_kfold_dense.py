@@ -138,6 +138,7 @@ def test_app_dense_controls_sidebar_and_kfold_preserves_normal_run():
     normal=at.session_state['runs'][-1]
     assert normal['config']['dense'][1]['activation']=='gelu'
     assert normal['config']['dense'][1]['dropout']==.3
+    next(b for b in at.button if b.label=='Volver a configuración').click().run(timeout=30)
     at.selectbox(key='cv_k').set_value(2)
     at.number_input(key='cv_epochs').set_value(1)
     next(b for b in at.button if b.label=='Ejecutar validación K-fold').click()

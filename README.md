@@ -138,3 +138,24 @@ El smoke usa `min_delta=10` deliberadamente para probar la mecánica (3 de 8 ép
 - **Reducción al finalizar el bloque:**pooling con ventana cuadrada2–4; stride=lado de ventana, sin padding. Mantiene canales y reduce alto/ancho. La tabla muestra las dimensiones reales y detecta colapsos.
 
 La interfaz usa secciones uniformes, learning rate con cinco decimales y resumen/acción principal visible; optimización, regularización y parada no quedan mezcladas. A390px los parámetros se apilan, las pestañas pueden desplazarse horizontalmente y los gráficos/tablas mantienen su propia navegación. Fuentes locales, foco de teclado visible y reducción de movimiento: sin recursos visuales externos.
+
+## Vista dedicada: Entrenamiento en vivo
+
+**Entrenar CNN** cambia inmediatamente del editor a un monitor y congela la configuración actual. Primero muestra preparación/caché/descarga; después inicialización, batches, validación y test. El trabajo pendiente se consume una sola vez: una recarga no inicia otro entrenamiento. Los controles no se muestran durante la ejecución. Al finalizar/error aparece **Volver a configuración**; **Ver último entrenamiento en vivo** recupera el monitor sin entrenar.
+
+Se muestran época/máximo, batch/total, batches acumulados, muestras vistas, loss del batch y medias actuales de train, tiempo y última validación disponible. La curva por época compara loss **train y validación** y actualiza tras cada validación; la traza por batch es otra gráfica. Antes de primera validación no se inventa un valor cero. Las actualizaciones de batch se limitan aproximadamente a cada250ms; los eventos de fase/época se muestran siempre. Un fallo nunca reemplaza la última CNN completada para inferencia.
+
+**Preparar y visualizar datos** utiliza la misma fuente de eventos: progreso de bytes durante descargas y muestras sólo tras preparar datos reales. La última preparación completada conserva su nombre de dataset si una preparación posterior falla.
+
+## Descargas que no esperan indefinidamente
+
+El transporte administrado usa URL y MD5 de metadatos oficiales torchvision, verifica antes de extraer y carga con `download=False`. Límites:10s de conexión,20s por lectura, unos300s por archivo (más una lectura en curso). Si Content-Length existe hay progreso de bytes; si no, se muestra tamaño recibido sin porcentaje ficticio. No hay reintentos automáticos ni resumes no verificados.
+
+- Cache CIFAR existente: torchvision verifica archivos oficiales. Archivo nuevo: MD5 obligatorio antes de extracción segura.
+- Descarga nueva utiliza `.part` privado y bloqueo entre sesiones; un parcial no se acepta como caché.
+- Un archivo incompleto **reciente** del descargador antiguo no se sobrescribe: puede pertenecer a una descarga aún activa. Esperá que termine; si dejó de cambiar, reintentá después60s. La nueva implementación no puede imponer timeout retroactivo a una llamada antigua ya bloqueada.
+- Alternativa manual CIFAR: descargá el [archivo oficial](https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz) y colocalo como `data/cifar-10-python.tar.gz`. Debe coincidir con MD5`c58f30108f718f92721af3b95e74349a`; el laboratorio lo verifica y extrae. Para MNIST/Fashion se usan los archivos/resources y primeras fuentes oficiales de torchvision; un error de esa fuente se informa, no se oculta con mirrors arbitrarios.
+
+Una conexión externa lenta sigue siendo lenta: la mejora aporta feedback/límites/cache seguro, no promete acelerar el servidor de origen. No cierres procesos ajenos para sustituir una descarga en curso.
+
+`tests/live_browser_fixture.py` es **sólo una prueba**: servidor aislado8502 con demoras de preparación/validación para fotografiar estados intermedios. El comando normal sigue siendo `uv run streamlit run app.py`; producción no agrega sleeps.

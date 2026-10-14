@@ -3,6 +3,7 @@ import numpy as np
 import torch
 from sklearn.datasets import load_digits
 from sklearn.model_selection import train_test_split
+from .downloads import ensure_dataset,emit
 
 ANIMAL_IDS = [2, 3, 4, 5, 6, 7]
 ANIMAL_NAMES = ["Pájaro", "Gato", "Ciervo", "Perro", "Rana", "Caballo"]
@@ -40,7 +41,8 @@ def subset(indices, labels, count, seed):
     return chosen
 
 
-def prepare(config):
+def prepare(config,on_event=None):
+    emit(on_event,"preparing",message=f"Preparando {config.dataset}")
     sources = None
     if config.dataset == "Digits":
         raw = load_digits()
@@ -54,8 +56,10 @@ def prepare(config):
         from torchvision import datasets
         animals = config.dataset == "CIFAR10Animals"
         factory = datasets.CIFAR10 if animals else getattr(datasets, config.dataset)
-        a = factory("data", train=True, download=True)
-        b = factory("data", train=False, download=True)
+        ensure_dataset(factory,"data",on_event)
+        emit(on_event,"reading",message="Leyendo dataset y separando clases/particiones")
+        a = factory("data", train=True, download=False)
+        b = factory("data", train=False, download=False)
         a_labels, b_labels = np.asarray(a.targets), np.asarray(b.targets)
         a_indices, b_indices = np.arange(len(a_labels)), np.arange(len(b_labels))
         if animals:
@@ -78,6 +82,7 @@ def prepare(config):
     x = torch.tensor(images)
     x = x.permute(0, 3, 1, 2).contiguous() if x.ndim == 4 else x.unsqueeze(1)
     mean, std = training_statistics(x, train, config.normalize)
+    emit(on_event,"prepared",message=f"Datos listos: {len(train)} train / {len(val)} val / {len(test)} test",train_count=len(train),val_count=len(val),test_count=len(test))
     return Data(x, torch.tensor(labels, dtype=torch.long), train, val, test, mean, std, names, sources)
 
 

@@ -17,6 +17,7 @@ from cnn_lab.cross_validation import cross_validate
 from cnn_lab.visualization import architecture_figure, neuron_figure
 from cnn_lab.metrics import evaluate
 from cnn_lab.explain import explain, feature_maps
+from cnn_lab.live import Monitor,TERMINAL
 
 st.set_page_config(page_title="CNN · Cuaderno experimental",layout="wide")
 st.markdown("<style>"+Path("ui/workbench.css").read_text()+"</style>",unsafe_allow_html=True)
@@ -44,9 +45,35 @@ def history_figure(history,keys,best_epoch,stopped_early=False):
 
 if "runs" not in st.session_state: st.session_state.runs=[]
 if "base" not in st.session_state: st.session_state.base=Config().dict()
+if st.session_state.get("view")=="live":
+    st.sidebar.empty()
+    st.sidebar.caption("Ejecución en vivo · editor oculto hasta finalizar o informar un error.")
+    st.header("Entrenamiento en vivo")
+    snapshot=st.session_state["live_training"]
+    frozen=snapshot["config"]
+    st.caption(f"Red activa: {frozen['dataset']} · {dataset_spec(frozen['dataset'])[2]} clases · lr {frozen['lr']:.5f}. Último modelo completado no cambia si esta ejecución falla.")
+    monitor=Monitor("live_training",frozen)
+    pending=st.session_state.pop("pending_training",None)
+    if pending is not None:
+        try:
+            run=train(Config.from_dict(pending),monitor.batch,on_event=monitor.event)
+            st.session_state.completed_runs=st.session_state.get("completed_runs",len(st.session_state.runs))+1
+            st.session_state.runs.append(run);st.session_state.runs=st.session_state.runs[-6:]
+            monitor.event({"phase":"early_stopped" if run["stopped_early"] else "completed","message":f"Entrenamiento finalizado · {run['epochs_completed']} de {run['max_epochs']} épocas. "+("Parada por paciencia. " if run['stop_reason']=='patience' else "Máximo alcanzado. ")+f"Mejor checkpoint: época {run['best_epoch']}.","epochs_completed":run['epochs_completed'],"best_epoch":run['best_epoch']})
+        except Exception as error:monitor.event({"phase":"error","message":str(error)})
+    elif snapshot["phase"] not in TERMINAL:
+        monitor.event({"phase":"error","message":"La ejecución fue interrumpida por una recarga/cambio de archivo. No se reinicia automáticamente; la última CNN completada se conserva. Volvé a configuración para un intento explícito. Si había una descarga antigua, puede seguir en curso y no se sobrescribirá."})
+    if st.session_state["live_training"]["phase"] in TERMINAL:
+        st.caption("Clasificador cerrado: la CNN sólo reconoce sus clases entrenadas. Consultá Test / Probar imagen al volver.")
+        if st.button("Volver a configuración",width="stretch"):
+            st.session_state.view="config"
+            st.rerun()
+    else:st.caption("Ejecución en curso; los controles de edición están ocultos. No hay pausa/reanudación. Una recarga no vuelve a lanzar el trabajo automáticamente.")
+    st.stop()
+
 base = Config.from_dict(st.session_state.base)
 
-with st.sidebar:
+with st.sidebar.container():
     st.header("Presets de configuración")
     preset=st.selectbox("Configuración inicial",["CNN base","Sin pooling","Promedio global","Sobreajuste","Con augmentation","Animales CIFAR-10"])
     if st.button("Cargar configuración"):
@@ -225,11 +252,17 @@ with data_tab:
     section("Inspección antes de entrenar","Comprobá clases, particiones y transformaciones sobre ejemplos reales.")
     if st.button("Preparar y visualizar datos",disabled=not valid,width="stretch"):
         try:
-            with st.spinner("Preparando dataset…"): st.session_state.preview_data=prepare(config)
-        except Exception as e: st.error(f"No se pudo preparar el dataset: {e}. Elegí Digits para trabajar offline.")
+            st.session_state.pop("data_preparation",None)
+            data_monitor=Monitor("data_preparation",config.dict())
+            data_monitor.event({"phase":"preparing","message":"Solicitud recibida: preparando dataset antes de generar muestras"})
+            st.session_state.preview_data=prepare(config,on_event=data_monitor.event)
+            st.session_state.preview_config=config.dict()
+            data_monitor.event({"phase":"completed","message":"Dataset listo. Las muestras se muestran debajo."})
+        except Exception as e:
+            data_monitor.event({"phase":"error","message":f"No se pudo preparar el dataset: {e}. Elegí Digits para trabajar offline."})
     if "preview_data" in st.session_state:
         d=st.session_state.preview_data
-        st.caption(f"Última preparación: {len(d.train)} train / {len(d.val)} val / {len(d.test)} test · μ={np.asarray(d.mean).reshape(-1).round(4).tolist()}, σ={np.asarray(d.std).reshape(-1).round(4).tolist()}")
+        st.caption(f"Última preparación completada · {st.session_state.get('preview_config',{}).get('dataset','dataset previo')} (puede diferir del editor): {len(d.train)} train / {len(d.val)} val / {len(d.test)} test · μ={np.asarray(d.mean).reshape(-1).round(4).tolist()}, σ={np.asarray(d.std).reshape(-1).round(4).tolist()}")
         raw=d.images[d.train[:6]]
         changed=augment(raw,torch.Generator().manual_seed(seed))
         cols=st.columns(6)
@@ -244,28 +277,26 @@ with launch_panel:
     summary([("Datos",dataset),("Entrada",f"{channels} × {size} × {size} · {classes} clases"),("Arquitectura",f"{len(blocks)} bloques · {len(dense)} densas ocultas"),("Optimización",f"{optimizer} · lr {lr:.5f}"),("Plan",f"batch {batch_size} · hasta {epochs} épocas"),("Parada",f"paciencia {patience} · Δ>{min_delta:.5f}" if early else "Desactivada")])
     if valid: st.caption(f"{sum(p.numel() for p in preview.parameters()):,} parámetros · checkpoint por menor loss de validación.")
     else: st.error(f"Revisá Arquitectura: {invalid_reason}")
-    train_clicked=st.button("Entrenar CNN",type="primary",disabled=not valid,width="stretch")
+    def queue_training():
+        import time
+        frozen=copy.deepcopy(config.dict())
+        st.session_state.base=frozen
+        st.session_state.live_training={"phase":"queued","config":frozen,"started":time.monotonic(),"history":[],"batches":[]}
+        st.session_state.pending_training=frozen
+        st.session_state.view="live"
+    if st.button("Entrenar CNN",type="primary",disabled=not valid,width="stretch"):
+        queue_training()
+        st.rerun()
     st.caption("Digits: sin descargas." if dataset=="Digits" else "La primera preparación descarga el dataset y lo conserva localmente. CIFAR-10: archivo completo ~163 MB.")
     st.caption("CPU local · entrenamiento síncrono, sin pausa/reanudación. No cambies controles mientras entrena.")
 
 with training_tab:
     section("Seguimiento y resultados","Los resultados usan la configuración congelada de cada ejecución, no los controles que edites después.")
-    progress=st.empty(); live=st.empty(); chart=st.empty()
-    if train_clicked:
-        def callback(trace,history,batches,total):
-            progress.progress(((trace["epoch"]-1)*total+trace["batch"])/(epochs*total))
-            live.caption(f'Época {trace["epoch"]}/{epochs} · batch {trace["batch"]}/{total} · loss {trace["loss"]:.4f} · {trace["elapsed"]:.1f}s')
-            if history and (trace.get("epoch_complete") or trace["batch"]%5==0):
-                chart.line_chart(pd.DataFrame(history).set_index("epoch")[["train_loss","val_loss"]])
-        try:
-            run=train(copy.deepcopy(config),callback)
-            st.session_state.completed_runs = st.session_state.get("completed_runs", len(st.session_state.runs)) + 1
-            st.session_state.runs.append(run)
-            st.session_state.runs=st.session_state.runs[-6:]
-            progress.empty()
-            st.success(f"Entrenamiento finalizado · {run['epochs_completed']} de {run['max_epochs']} épocas. " + (f"Parada por paciencia ({config.patience}). " if run["stop_reason"]=="patience" else "Máximo de épocas alcanzado. ") + f"Mejor checkpoint: época {run['best_epoch']} por menor loss de validación.")
-        except Exception as e: st.error(f"Entrenamiento detenido: {e}")
-    if not st.session_state.runs: st.caption("Aún no hay ejecuciones. Empezá con Digits y la configuración base; formulá una hipótesis antes de cambiar un parámetro.")
+    if "live_training" in st.session_state:
+        st.caption("El último monitor queda guardado. No inicia otro entrenamiento.")
+        if st.button("Ver último entrenamiento en vivo"):
+            st.session_state.view="live";st.rerun()
+    if not st.session_state.runs:st.caption("Aún no hay ejecuciones; Entrenar CNN abre una vista dedicada antes de preparar datos.")
 
 run=None
 if st.session_state.runs:
