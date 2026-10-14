@@ -9,7 +9,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import torch
-from cnn_lab.model import Config, Block, Conv, CNN, DenseLayer, ACTIVATIONS, DATASET_SPECS, dataset_spec
+from cnn_lab.model import Config, Block, Conv, CNN, DenseLayer, ACTIVATIONS, DATASET_SPECS, dataset_spec, MAX_CONV_BLOCKS
 from cnn_lab.data import prepare, augment, display_image
 from cnn_lab.inference import classify_latest
 from cnn_lab.training import train
@@ -120,7 +120,7 @@ with arch_tab:
     st.caption("Cada convolución → BatchNorm opcional → activación. Pooling al final del bloque. La salida tiene un logit por clase (6 animales o 10 clases), no probabilidades.")
     section("Estructura global","Cantidad de bloques, reducción espacial y profundidad de la MLP.")
     cols=st.columns(3)
-    with cols[0]: count=number("Bloques convolucionales",1,3,len(base.blocks),"blocks")
+    with cols[0]: count=number("Bloques convolucionales",1,MAX_CONV_BLOCKS,len(base.blocks),"blocks",help=f"1–{MAX_CONV_BLOCKS} bloques; hasta3 convoluciones por bloque. Más profundidad no exige más pooling: cada reducción debe conservar al menos1×1 y la red admite hasta2M parámetros.")
     with cols[1]: head=select("Reducción final",["flatten","gap"],base.head,"head")
     with cols[2]: hidden_count=number("Capas densas ocultas · profundidad",0,5,len(base.dense),"hidden_count")
     blocks=[]

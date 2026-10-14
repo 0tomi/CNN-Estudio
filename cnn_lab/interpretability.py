@@ -8,6 +8,7 @@ import streamlit as st
 import torch
 from .data import display_image
 from .explain import gradcam_all, explain, scale_map
+from .image_gallery import gallery_payload, gallery_widget, apply_selection
 
 PAGE_SIZE = 10
 
@@ -70,21 +71,13 @@ def render_interpretability(run):
         state.update(page=page, sample=start)
         st.rerun()
     navigation[1].caption(f'Página {page + 1}/{pages} · {start + 1}–{end} de {len(data.test)}')
-    st.caption('10 imágenes por página. Al cambiar de página se selecciona su primera imagen. El borde del botón indica la seleccionada.')
+    st.caption('Pulsá directamente una imagen para seleccionarla; también podés enfocarla con Tab y usar Enter o Espacio. Al cambiar de página se selecciona su primera imagen.')
     probabilities = run['probabilities']
-    with st.container(key='interpret_gallery'):
-        for row_start in range(start, end, 5):
-            columns = st.columns(5)
-            for column, sample in zip(columns, range(row_start, min(row_start + 5, end))):
-                index = data.test[sample]
-                predicted = int(probabilities[sample].argmax())
-                with column:
-                    st.image(resize_pixels(display_image(data.images[index]), 160), width='stretch')
-                    st.caption(f"Real: {data.names[int(data.labels[index])]}\n\nPred.: {data.names[predicted]} · {probabilities[sample, predicted]:.1%}")
-                    if st.button(f"{'✓ ' if state['sample'] == sample else ''}Imagen {sample + 1}", key=f'{prefix}_tile_{sample}',
-                                 type='primary' if state['sample'] == sample else 'secondary', width='stretch'):
-                        state['sample'] = sample
-                        st.rerun()
+    gallery_token = f'{identity}:{page}:{len(data.test)}'
+    payload = gallery_payload(data, probabilities, start, end, state['sample'], gallery_token)
+    event = gallery_widget(payload, key=prefix+f'_gallery_{page}')
+    if apply_selection(state, event, gallery_token, start, end):
+        st.rerun()
     sample = state['sample']; index = data.test[sample]
     original = display_image(data.images[index]); actual = int(data.labels[index])
     predicted = int(probabilities[sample].argmax())
@@ -96,12 +89,18 @@ def render_interpretability(run):
     right.caption('Coincide con la etiqueta real.' if predicted == actual else 'No coincide con la etiqueta real.')
     right.dataframe(pd.DataFrame({'Clase': data.names, 'Probabilidad softmax': probabilities[sample]}).sort_values('Probabilidad softmax', ascending=False),
                     hide_index=True, width='stretch', height=245, column_config={'Probabilidad softmax': st.column_config.NumberColumn(format='%.4f')})
-    mode = st.radio('Clase para explicar', ['Clase predicha', 'Clase real', 'Elegir clase'], horizontal=True, key=sample_key+'_target_mode')
-    target = predicted if mode == 'Clase predicha' else actual
-    if mode == 'Elegir clase':
-        target = st.selectbox('Clase objetivo', list(range(len(data.names))), index=predicted,
+    st.markdown('**¿Qué puntaje querés explicar con Grad-CAM?**')
+    st.caption('La misma foto puede aportar evidencia para distintas clases. Elegir otra clase cambia sólo los mapas: no cambia la imagen, la predicción ni sus probabilidades y no entrena la red.')
+    options = [f'Por qué predijo {data.names[predicted]}']
+    if actual != predicted:
+        options.append(f'Evidencia para la etiqueta real: {data.names[actual]}')
+    options.append('Explorar otra clase')
+    mode = st.radio('Pregunta para Grad-CAM', options, horizontal=True, key=sample_key+'_target_question')
+    target = predicted if mode == options[0] else actual
+    if mode == 'Explorar otra clase':
+        target = st.selectbox('Clase cuyo puntaje querés explorar', list(range(len(data.names))), index=predicted,
                               format_func=lambda item: data.names[item], key=sample_key+'_target')
-    st.caption(f'Objetivo actual: logit de {data.names[target]}. Softmax no es confianza calibrada ni prueba de corrección.')
+    st.caption(f'La red predijo {data.names[predicted]} ({probabilities[sample,predicted]:.1%}). Mostramos regiones que contribuyen positivamente al puntaje de {data.names[target]}, antes de convertir puntajes en probabilidades. No demuestra causalidad ni garantiza que la predicción sea correcta.')
     cache_key = (identity, sample, target)
     cache = st.session_state.get('interpret_maps')
     if cache is None or cache['key'] != cache_key:
@@ -127,6 +126,7 @@ def render_interpretability(run):
                     st.caption('CAM constante/cero: no hay contraste positivo; no indica igual importancia de todos los píxeles.')
     st.caption('Grad-CAM explica sensibilidad del logit, no causalidad. Resoluciones pequeñas producen atribuciones gruesas; no demuestran que la clasificación sea correcta.')
     st.subheader('4 · Mapas de activación por canal')
+    st.caption('Estos mapas dependen de la imagen, no de la clase elegida para Grad-CAM.')
     st.caption('Salidas crudas de cada convolución, antes de BatchNorm/activación: NO son Grad-CAM. Cada canal se escala por separado. Se muestran 8 canales por página.')
     for name, result in items:
         if 'features' not in result: continue
@@ -147,6 +147,7 @@ def render_interpretability(run):
         channel = columns[0].number_input('Canal de la neurona', 0, maps.shape[0]-1, 0, key=detail_key+'_channel')
         row = columns[1].number_input('Fila de la neurona', 0, maps.shape[1]-1, 0, key=detail_key+'_row')
         col = columns[2].number_input('Columna de la neurona', 0, maps.shape[2]-1, 0, key=detail_key+'_col')
+        st.caption('La sensibilidad de una neurona depende de canal/fila/columna e imagen; no usa la clase elegida arriba para Grad-CAM.')
         if st.checkbox('Calcular sensibilidad de esta neurona', key=prefix+'_neuron_enabled'):
             result = explain(model, data.normalized([index]), layer, channel=channel, row=row, col=col, method='neuron')
             st.image(overlay_image(original, result['heat']), caption='Gradiente absoluto respecto de la entrada · no es Grad-CAM', width=256)

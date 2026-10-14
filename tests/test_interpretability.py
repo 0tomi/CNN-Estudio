@@ -67,14 +67,21 @@ def rgb_run(total=23):
     with torch.no_grad(): probabilities=model.eval()(images).softmax(1).numpy()
     return {'model':model,'data':data,'config':config.dict(),'probabilities':probabilities,'best_epoch':1}
 
-def test_gallery_rgb_pagination_selection_target_cache_and_run_reset():
+def test_gallery_rgb_pagination_selection_target_cache_and_run_reset(monkeypatch):
+    import cnn_lab.interpretability as workspace
+    payloads=[]; events=[]
+    def component(payload,key):
+        payloads.append(payload)
+        return events.pop(0) if events else None
+    monkeypatch.setattr(workspace,"gallery_widget",component)
     script='''import streamlit as st\nfrom cnn_lab.interpretability import render_interpretability\nrender_interpretability(st.session_state.run)'''
     at=AppTest.from_string(script); run=rgb_run(); at.session_state.run=run
     at.run(timeout=30); assert not at.exception
-    def tiles():return [button for button in at.button if 'Imagen ' in button.label]
-    assert len(tiles())==10 and tiles()[0].label=='✓ Imagen 1'
+    def tiles():return payloads[-1]['items']
+    assert len(tiles())==10 and payloads[-1]['selected']==0
     cached=at.session_state['interpret_maps']; assert len(cached['result']['layers'])==3
-    tiles()[3].click().run(timeout=30)
+    events.append({'index':3,'token':payloads[-1]['token']})
+    at.run(timeout=30)
     assert at.session_state['interpret_selection']['sample']==3
     assert at.session_state['interpret_maps']['key'][1]==3
     assert any('Imagen 4 seleccionada'==header.value.removeprefix('2 · ') for header in at.subheader)
@@ -85,9 +92,16 @@ def test_gallery_rgb_pagination_selection_target_cache_and_run_reset():
     assert next(button for button in at.button if button.label=='Siguiente').disabled
     next(button for button in at.button if button.label=='Anterior').click().run(timeout=30)
     assert at.session_state['interpret_selection']['sample']==10
-    at.radio[0].set_value('Elegir clase').run(timeout=30)
-    target=next(widget for widget in at.selectbox if widget.label=='Clase objetivo')
+    at.radio[0].set_value('Explorar otra clase').run(timeout=30)
+    target=next(widget for widget in at.selectbox if widget.label=='Clase cuyo puntaje querés explorar')
+    probabilities=run['probabilities'].copy()
+    maps_before={name:layer['features'].copy() for name,layer in at.session_state['interpret_maps']['result']['layers'].items()}
     target.set_value(4).run(timeout=30)
+    assert np.array_equal(probabilities,run['probabilities'])
+    for name,layer in at.session_state['interpret_maps']['result']['layers'].items():
+        assert np.array_equal(maps_before[name],layer['features'])
+    assert any('cambia sólo los mapas' in caption.value for caption in at.caption)
+    assert not any('Imagen ' in button.label for button in at.button)
     assert at.session_state['interpret_maps']['key'][2]==4
     assert at.session_state['interpret_selection']['sample']==10
     cached=at.session_state['interpret_maps']
@@ -96,3 +110,25 @@ def test_gallery_rgb_pagination_selection_target_cache_and_run_reset():
     at.session_state.run=rgb_run(11); at.run(timeout=30)
     assert at.session_state['interpret_selection']['sample']==0
     assert not at.exception
+
+
+def test_image_payload_and_selection_events():
+    import base64,io
+    from PIL import Image
+    from cnn_lab.image_gallery import gallery_payload,apply_selection
+    run=rgb_run(23)
+    payload=gallery_payload(run['data'],run['probabilities'],0,10,4,'run-a:0')
+    assert len(payload['items'])==10 and payload['selected']==4
+    for item in payload['items']:
+        assert 'Seleccionar imagen' in item['label']
+        image=Image.open(io.BytesIO(base64.b64decode(item['image'].split(',')[1])))
+        assert image.size==(160,160) and image.mode=='RGB'
+    state={'sample':4}
+    assert apply_selection(state,{'index':0,'token':'run-a:0'},'run-a:0',0,10)
+    assert state['sample']==0
+    assert apply_selection(state,{'index':7,'token':'run-a:0'},'run-a:0',0,10)
+    for event in [None,{'index':0,'token':'old-run'}, {'index':10,'token':'run-a:0'}, {'index':True,'token':'run-a:0'}, {'index':7,'token':'run-a:0'}]:
+        assert not apply_selection(state,event,'run-a:0',0,10)
+        assert state['sample']==7
+    with pytest.raises(ValueError): gallery_payload(run['data'],run['probabilities'],0,23,0,'a')
+    assert len(gallery_payload(run['data'],run['probabilities'],20,23,20,'a')['items'])==3

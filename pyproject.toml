@@ -3,7 +3,7 @@ name = "cnn-estudio"
 version = "0.1.0"
 description = "Laboratorio local de CNN para estudiar con experimentos reales"
 requires-python = ">=3.12,<3.14"
-dependencies = ["requests>=2.32,<3", "filelock>=3,<4", "numpy>=2,<3", "pillow>=10,<13", "torch>=2.6,<3", "torchvision>=0.21,<1", "streamlit>=1.42,<2", "plotly>=6,<7", "scikit-learn>=1.6,<2", "pandas>=2.2,<3", "pytest>=8,<10"]
+dependencies = ["requests>=2.32,<3", "filelock>=3,<4", "numpy>=2,<3", "pillow>=10,<13", "torch>=2.6,<3", "torchvision>=0.21,<1", "streamlit>=1.66,<2", "plotly>=6,<7", "scikit-learn>=1.6,<2", "pandas>=2.2,<3", "pytest>=8,<10"]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

@@ -91,7 +91,7 @@ Los mapas se normalizan para visualización; un mapa constante/cero se informa e
 
 ## Límites y próximos experimentos
 
-Todo corre en CPU y se limita a 3 bloques, 64 canales por conv, 5 capas densas ocultas, 30 épocas y 2 millones de parámetros. El entrenamiento es síncrono, sin pausa/reanudación. El historial vive en la sesión; descargá CSV/JSON/checkpoint. Para estudiar mañana priorizá hipótesis y comparación controlada antes que una red grande.
+Todo corre en CPU y se limita a 10 bloques (1–3 convoluciones por bloque), 64 canales por conv, 5 capas densas ocultas, 30 épocas y 2 millones de parámetros. El entrenamiento es síncrono, sin pausa/reanudación. El historial vive en la sesión; descargá CSV/JSON/checkpoint. Para estudiar mañana priorizá hipótesis y comparación controlada antes que una red grande.
 
 ## Fuentes para profundizar
 

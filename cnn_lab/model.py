@@ -4,6 +4,8 @@ import math
 import torch
 from torch import nn
 
+MAX_CONV_BLOCKS = 10
+
 @dataclass
 class Conv:
     channels: int = 16
@@ -80,8 +82,8 @@ def dataset_spec(name):
 ACTIVATIONS = {"relu": nn.ReLU, "leakyrelu": nn.LeakyReLU, "gelu": nn.GELU, "tanh": nn.Tanh}
 
 def validate(c):
-    if not 1 <= len(c.blocks) <= 3 or not isinstance(c.dense, list) or not 0 <= len(c.dense) <= 5:
-        raise ValueError("Usá 1–3 bloques y 0–5 capas densas ocultas.")
+    if not 1 <= len(c.blocks) <= MAX_CONV_BLOCKS or not isinstance(c.dense, list) or not 0 <= len(c.dense) <= 5:
+        raise ValueError(f"Usá 1–{MAX_CONV_BLOCKS} bloques y 0–5 capas densas ocultas.")
     if c.dataset not in DATASET_SPECS or c.head not in ("flatten", "gap"):
         raise ValueError("Dataset o salida no reconocido.")
     if c.optimizer not in ("Adam", "AdamW", "SGD"):

@@ -48,7 +48,7 @@ Las pruebas cubren tamaño/RF, configuraciones inválidas, splits/normalización
 
 `cnn_lab/model.py` configura y valida la CNN; `data.py` prepara splits/transformaciones; `training.py` entrena y elige checkpoint; `metrics.py` evalúa; `explain.py` produce atribuciones; `app.py` presenta el cuaderno.
 
-Límites: 1–3 bloques, 1–3 convoluciones por bloque, canales ≤64, MLP de 0–5 capas ocultas, ≤256 neuronas por capa, 30 épocas y 2M parámetros. Las operaciones son síncronas, sin controles ficticios de pausa. BatchNorm con mapas 1×1 y un último batch de una muestra se rechaza con instrucciones para cambiar batch size, muestras o arquitectura. Mapas Digits son de baja resolución y no prueban causalidad.
+Límites: 1–10 bloques, 1–3 convoluciones por bloque, canales ≤64, MLP de 0–5 capas ocultas, ≤256 neuronas por capa, 30 épocas y 2M parámetros. Las operaciones son síncronas, sin controles ficticios de pausa. BatchNorm con mapas 1×1 y un último batch de una muestra se rechaza con instrucciones para cambiar batch size, muestras o arquitectura. Mapas Digits son de baja resolución y no prueban causalidad.
 
 **Rollback:** este laboratorio es una unidad independiente; retirar `app.py`, `cnn_lab/`, tests, documentación, `pyproject.toml`, `uv.lock` y `.streamlit/` elimina su comportamiento sin afectar otros proyectos.
 
@@ -162,10 +162,14 @@ Una conexión externa lenta sigue siendo lenta: la mejora aporta feedback/límit
 
 ## Interpretar varias imágenes y capas
 
-En **Interpretabilidad**, la galería muestra **10 imágenes de test por página** con etiqueta real, predicción y probabilidad softmax del experimento seleccionado. **Anterior / Siguiente** seleccionan la primera imagen de la nueva página; pulsar **Imagen N** actualiza el detalle y sus mapas. No descarga datos ni entrena. La selección y los mapas se reinician al cambiar de experimento; subir imágenes sigue usando el último entrenamiento completado, no el seleccionado para comparar.
+En **Interpretabilidad**, la galería muestra **10 imágenes de test por página** con etiqueta real, predicción y probabilidad softmax del experimento seleccionado. **Anterior / Siguiente** seleccionan la primera imagen de la nueva página; pulsar directamente **la miniatura** (o enfocarla con Tab y usar Enter/Espacio) actualiza el detalle y sus mapas. No descarga datos ni entrena. La selección y los mapas se reinician al cambiar de experimento; subir imágenes sigue usando el último entrenamiento completado, no el seleccionado para comparar.
 
 - **Grad-CAM:** muestra todas las convoluciones (no sólo un mapa por bloque), para la misma imagen y clase. Predicción es el objetivo inicial; también podés explicar la etiqueta real u otra clase. Un único forward y cálculo de gradientes produce todos los mapas, con caché acotado a la última imagen/clase/experimento.
 - **Activación por canal:** secciones separadas para cada convolución; grupos de8 permiten inspeccionar todos los canales. Son salidas crudas pre-BN/pre-activación, no atribuciones de clase.
 - **Inspección detallada:** conserva filtros aprendidos y sensibilidad de una neurona con canal/fila/columna.
 
 Cada CAM/canal tiene escala propia: colores parecidos **no** comparan magnitudes entre capas. Un CAM cero/constante se indica explícitamente y no pinta una falsa zona caliente. La base se amplía por vecino más cercano; el CAM se interpola bilinealmente. Atribución no es causalidad ni garantía de clasificación correcta.
+
+La pregunta **¿Qué puntaje querés explicar con Grad-CAM?** elige qué clase analizar, no qué clase predecir: cambia sólo la atribución. La foto, predicción y probabilidades permanecen iguales. Los mapas crudos y el gradiente de neurona no dependen de esa clase.
+
+Hasta **10 bloques convolucionales**, cada uno con1–3 convoluciones (hasta30 en total). El límite de2M parámetros no cambia. Los bloques nuevos conservan sus controles de pooling: no se elimina automáticamente. Para muchas capas, elegí **sin pooling** donde corresponda;10 reducciones2×2 colapsan incluso una entrada32×32. La tabla valida formas y da un error accionable antes de entrenar.
