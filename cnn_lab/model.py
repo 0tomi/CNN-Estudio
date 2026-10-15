@@ -5,6 +5,7 @@ import torch
 from torch import nn
 
 MAX_CONV_BLOCKS = 10
+MAX_EPOCHS = 200
 
 @dataclass
 class Conv:
@@ -88,8 +89,8 @@ def validate(c):
         raise ValueError("Dataset o salida no reconocido.")
     if c.optimizer not in ("Adam", "AdamW", "SGD"):
         raise ValueError("Activación u optimizador no reconocido.")
-    if not (1 <= c.epochs <= 30 and c.batch_size in (16,32,64,128,256) and 200 <= c.samples <= 10000):
-        raise ValueError("Límites: 1–30 épocas, batch 16/32/64/128/256 y 200–10000 muestras.")
+    if not (1 <= c.epochs <= MAX_EPOCHS and c.batch_size in (16,32,64,128,256) and 200 <= c.samples <= 10000):
+        raise ValueError(f"Límites: 1–{MAX_EPOCHS} épocas, batch 16/32/64/128/256 y 200–10000 muestras.")
     if not (0 < c.lr <= .1 and 0 <= c.weight_decay <= .1 and 0 <= c.momentum < 1):
         raise ValueError("Hiperparámetros fuera de rango seguro.")
     if not isinstance(c.seed, int) or not 0 <= c.seed < 2**32:

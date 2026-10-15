@@ -9,7 +9,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import torch
-from cnn_lab.model import Config, Block, Conv, CNN, DenseLayer, ACTIVATIONS, DATASET_SPECS, dataset_spec, MAX_CONV_BLOCKS
+from cnn_lab.model import Config, Block, Conv, CNN, DenseLayer, ACTIVATIONS, DATASET_SPECS, dataset_spec, MAX_CONV_BLOCKS, MAX_EPOCHS
 from cnn_lab.data import prepare, augment, display_image
 from cnn_lab.inference import classify_latest
 from cnn_lab.training import train
@@ -150,7 +150,7 @@ with st.sidebar.container():
     st.caption("Digits funciona sin internet. MNIST, FashionMNIST y CIFAR-10 se descargan al preparar datos o entrenar.")
     st.caption("Entrenamiento síncrono: progreso real por batch; no hay pausa/reanudación. No cambies controles mientras entrena.")
 
-training_tab,arch_tab,data_tab,explain_tab,test_tab,upload_tab,study_tab=st.tabs(["01 · Entrenamiento","02 · Arquitectura","03 · Datos","04 · Interpretabilidad","05 · Test","06 · Probar imagen","07 · Guía de estudio"])
+training_tab,arch_tab,data_tab,explain_tab,test_tab,upload_tab,study_tab,comparison_tab=st.tabs(["01 · Entrenamiento","02 · Arquitectura","03 · Datos","04 · Interpretabilidad","05 · Test","06 · Probar imagen","07 · Guía de estudio","08 · Comparar modelos"])
 
 def select(label,options,value,key):
     return st.selectbox(label,options,index=options.index(value),key="cfg_"+key)
@@ -240,7 +240,7 @@ with training_tab:
     with controls:
         section("Plan de entrenamiento","Una época recorre train; cada batch produce una actualización de pesos.")
         cols=st.columns(2)
-        with cols[0]: epochs=number("Máximo de épocas",1,30,base.epochs,"epochs",help="1–30. Con parada temprana puede terminar antes.")
+        with cols[0]: epochs=number("Máximo de épocas",1,MAX_EPOCHS,base.epochs,"epochs",help=f"1–{MAX_EPOCHS}. Con parada temprana puede terminar antes.")
         with cols[1]: batch_size=select("Batch size · muestras",[16,32,64,128,256],base.batch_size,"batch_size")
         section("Optimización","Elegí cómo se actualizan los parámetros y la magnitud de cada paso.")
         cols=st.columns(2)
@@ -378,7 +378,7 @@ with training_tab:
     st.write("Repartí el conjunto de desarrollo (train + validación originales) en K folds. Cada muestra valida exactamente una vez. Test queda separado y nunca se evalúa en esta acción.")
     cols=st.columns(2)
     with cols[0]: cv_k=st.selectbox("Cantidad de folds K",[2,3,5],index=1,key="cv_k")
-    with cols[1]: cv_epochs=st.number_input("Épocas por fold",1,30,min(epochs,3),key="cv_epochs")
+    with cols[1]: cv_epochs=st.number_input("Épocas por fold",1,MAX_EPOCHS,min(epochs,3),key="cv_epochs")
     st.caption(f"Coste: {cv_k} entrenamientos independientes × {cv_epochs} épocas= hasta {cv_k*cv_epochs} épocas en CPU. Parada temprana: {"activada, cada fold puede terminar antes" if early else "desactivada"}. Se carga el dataset una vez; en datasets no cacheados puede descargarse. Cada fold crea pesos y optimizador nuevos. No reemplaza la última CNN para Probar imagen; no guarda modelos de folds ni crea un ensemble.")
     cv_progress=st.empty(); cv_live=st.empty(); cv_chart=st.empty()
     if st.button("Ejecutar validación K-fold",disabled=not valid):
@@ -492,3 +492,7 @@ with study_tab:
     with st.expander("Conceptos, fórmulas y experimentos",expanded=False):
         st.markdown("## Cómo atraviesa la red una imagen"+details)
     st.download_button("Descargar guía de estudio",Path("GUIA_ESTUDIO.md").read_text(),"guia-cnn.md","text/markdown")
+
+with comparison_tab:
+    from cnn_lab.comparison import render_comparison
+    render_comparison(st.session_state.runs)

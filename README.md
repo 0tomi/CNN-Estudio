@@ -48,7 +48,7 @@ Las pruebas cubren tamaño/RF, configuraciones inválidas, splits/normalización
 
 `cnn_lab/model.py` configura y valida la CNN; `data.py` prepara splits/transformaciones; `training.py` entrena y elige checkpoint; `metrics.py` evalúa; `explain.py` produce atribuciones; `app.py` presenta el cuaderno.
 
-Límites: 1–10 bloques, 1–3 convoluciones por bloque, canales ≤64, MLP de 0–5 capas ocultas, ≤256 neuronas por capa, 30 épocas y 2M parámetros. Las operaciones son síncronas, sin controles ficticios de pausa. BatchNorm con mapas 1×1 y un último batch de una muestra se rechaza con instrucciones para cambiar batch size, muestras o arquitectura. Mapas Digits son de baja resolución y no prueban causalidad.
+Límites: 1–10 bloques, 1–3 convoluciones por bloque, canales ≤64, MLP de 0–5 capas ocultas, ≤256 neuronas por capa, 200 épocas y 2M parámetros. Las operaciones son síncronas, sin controles ficticios de pausa. BatchNorm con mapas 1×1 y un último batch de una muestra se rechaza con instrucciones para cambiar batch size, muestras o arquitectura. Mapas Digits son de baja resolución y no prueban causalidad.
 
 **Rollback:** este laboratorio es una unidad independiente; retirar `app.py`, `cnn_lab/`, tests, documentación, `pyproject.toml`, `uv.lock` y `.streamlit/` elimina su comportamiento sin afectar otros proyectos.
 
@@ -197,3 +197,9 @@ Se carga sólo el formato local conocido con `torch.load(weights_only=True, map_
 - **Entrenamiento → experimento seleccionado → Exportar configuración del experimento (JSON):** descarga la configuración congelada de ese resultado, aunque hayas cambiado el editor.
 
 Ambos contienen bloques/convoluciones, BN, activaciones, pooling, MLP por capa, dataset, optimizador e hiperparámetros, normalización/augmentation, semilla y parada temprana. Son JSON puro compatible con **Importar configuración JSON → Aplicar JSON**; no incluyen pesos, imágenes, logs ni probabilidades. Descargar el checkpoint sigue siendo una acción independiente.
+
+## Comparar modelos completados
+
+En **08 · Comparar modelos**, elegí de2 a6 experimentos locales. Un color identifica cada modelo; train es línea continua y validación discontinua. Podés alternar loss/accuracy y ocultar series. Cada curva termina en sus épocas realmente completadas, sin rellenar puntos. Las tablas contrastan métricas **TEST del mejor checkpoint**, loss mínima de **validación**, época elegida, tiempo/parámetros y configuraciones congeladas. No reentrena ni vuelve a inferir; tampoco cambia el modelo de Interpretabilidad ni el último usado para imágenes subidas.
+
+Se comprueban dataset, clases y las muestras reales de test mediante identidad fuente/contenido. Si difieren, aparece una advertencia: las diferencias no aíslan el efecto de la arquitectura y no se declara un ganador. Usá validación para elegir; repetir decisiones mirando test sesga la evaluación. El máximo configurable es **200 épocas**, también por fold; los valores iniciales no cambian. La paciencia de parada temprana sigue siendo un parámetro separado de1–30.
