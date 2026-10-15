@@ -32,7 +32,7 @@ Leé [la guía de estudio](GUIA_ESTUDIO.md) y cambiá una variable por experimen
 - Semillas de Python/NumPy/PyTorch y algoritmo determinista CPU. La reproducibilidad exacta depende también de versión de paquetes/hardware; `uv.lock` fija versiones.
 - Mejor checkpoint según loss **de validación** se usa para test/mapas.
 - Exportá JSON de configuración, CSV de batches/épocas y `.pt` con pesos, normalización, clases, configuración, splits y mejor época.
-- Historial en memoria de sesión: no sobrevive a reinicios. Checkpoints son para inferencia; no guardan estado del optimizador ni permiten reanudar desde UI.
+- Historial local automático: últimos6 entrenamientos completados en `experiments/`, recuperables al refrescar/reiniciar. Checkpoints para inferencia, sin estado del optimizador ni reanudación desde UI.
 - No cargues checkpoints PyTorch de fuentes desconocidas. Para cargar el exportado: `torch.load(path, map_location="cpu", weights_only=True)`; reconstruí `CNN(Config.from_dict(payload['config']), tamaño)` y aplicá `load_state_dict`.
 
 ## Verificar
@@ -173,3 +173,27 @@ Cada CAM/canal tiene escala propia: colores parecidos **no** comparan magnitudes
 La pregunta **¿Qué puntaje querés explicar con Grad-CAM?** elige qué clase analizar, no qué clase predecir: cambia sólo la atribución. La foto, predicción y probabilidades permanecen iguales. Los mapas crudos y el gradiente de neurona no dependen de esa clase.
 
 Hasta **10 bloques convolucionales**, cada uno con1–3 convoluciones (hasta30 en total). El límite de2M parámetros no cambia. Los bloques nuevos conservan sus controles de pooling: no se elimina automáticamente. Para muchas capas, elegí **sin pooling** donde corresponda;10 reducciones2×2 colapsan incluso una entrada32×32. La tabla valida formas y da un error accionable antes de entrenar.
+
+## Recuperar los últimos6 experimentos al refrescar
+
+Los **entrenamientos normales completados se guardan automáticamente** en `experiments/` (carpeta local excluida de Git). Una sesión nueva recupera hasta6 experimentos, sus métricas, curvas, imágenes test, predicciones y pesos del mejor checkpoint. **Interpretabilidad y Probar imagen siguen funcionando sin descargar ni reentrenar**. La subida usa el último experimento completado; el selector permite estudiar otros anteriores.
+
+| Archivo | Contenido |
+|---|---|
+| `experiments/index.json` | Versión1, orden de finalización, contador e IDs estables de los últimos6 |
+| `experiments/<id>/run.json` | Configuración, clases, métricas, logs batch/época, parada temprana, fecha y fuentes |
+| `weights.pt` | `state_dict` del mejor checkpoint, formato4; nunca un modelo Python serializado |
+| `data.pt` | Tensores de imágenes/etiquetas, splits exactos, media/desvío de train y probabilidades |
+
+Guardado con bloqueo entre sesiones, archivos temporales y reemplazo atómico del índice **después** de escribir datos/pesos. El séptimo experimento elimina únicamente la carpeta propia del más antiguo después de confirmar el nuevo índice. Si falla el disco, el resultado permanece en memoria y aparece **Reintentar guardado local**: no vuelve a entrenar. Una entrada corrupta se omite con advertencia sin impedir recuperar otras; si se rompe el índice, se buscan manifiestos completos. Copiar toda `experiments/` sirve como respaldo local consistente cuando no se está escribiendo.
+
+**Límites:** no recupera resultados perdidos antes de incorporar este guardado. Los modelos que aún existan en una sesión abierta se migran en su próximo rerun. No se guardan el borrador del editor, trabajos incompletos, resultados K-fold ni el optimizador para continuar entrenamiento. Se recuperan hasta6 modelos/datasets en RAM. Los datos se guardan como float32 exacto (sin volver a normalizar): Digits ocupa menos de1MB; CIFAR-10 animal con3000+600 imágenes ocupa unos44MB por experimento más pesos/logs, y con12000 imágenes unos147MB. No se comprime con pérdida ni se presupone que exista la caché original.
+
+Se carga sólo el formato local conocido con `torch.load(weights_only=True, map_location='cpu')`; no hay importación de checkpoints externos. `CNN_LAB_EXPERIMENT_DIR` permite elegir otra carpeta desde el proceso (las pruebas usan carpetas temporales aisladas). El formato valida arquitectura, formas/tipos, valores finitos, clases y particiones disjuntas; no es una herramienta para abrir archivos desconocidos.
+
+## Exportar arquitectura e hiperparámetros en JSON
+
+- **Sidebar → Exportar arquitectura e hiperparámetros (JSON):** descarga `config-actual.json`, la configuración actual del editor. Está junto a **Importar configuración JSON**.
+- **Entrenamiento → experimento seleccionado → Exportar configuración del experimento (JSON):** descarga la configuración congelada de ese resultado, aunque hayas cambiado el editor.
+
+Ambos contienen bloques/convoluciones, BN, activaciones, pooling, MLP por capa, dataset, optimizador e hiperparámetros, normalización/augmentation, semilla y parada temprana. Son JSON puro compatible con **Importar configuración JSON → Aplicar JSON**; no incluyen pesos, imágenes, logs ni probabilidades. Descargar el checkpoint sigue siendo una acción independiente.

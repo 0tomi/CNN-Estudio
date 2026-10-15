@@ -18,6 +18,8 @@ from cnn_lab.visualization import architecture_figure, neuron_figure
 from cnn_lab.metrics import evaluate
 from cnn_lab.explain import explain, feature_maps
 from cnn_lab.live import Monitor,TERMINAL
+from cnn_lab.experiment_store import ExperimentStore
+from cnn_lab.config_export import config_json
 
 st.set_page_config(page_title="CNN · Cuaderno experimental",layout="wide")
 st.markdown("<style>"+Path("ui/workbench.css").read_text()+"</style>",unsafe_allow_html=True)
@@ -43,7 +45,46 @@ def history_figure(history,keys,best_epoch,stopped_early=False):
     fig.update_layout(height=290,margin=dict(l=20,r=20,t=35,b=35),xaxis_title="Época",xaxis=dict(dtick=1),legend=dict(orientation="h",y=-.2),paper_bgcolor="#F7F5EF",plot_bgcolor="#F7F5EF")
     return fig
 
-if "runs" not in st.session_state: st.session_state.runs=[]
+store=ExperimentStore()
+
+def save_completed_run(run):
+    try:
+        count,warnings=store.save(run)
+        st.session_state.completed_runs=max(st.session_state.get('completed_runs',0),count)
+        st.session_state.store_warnings.extend(warnings)
+    except Exception as error:
+        run['_saved_local']=False
+        message=f'No se pudo guardar el experimento localmente: {error}. Se conserva en memoria; podés reintentar sin entrenar.'
+        st.session_state.store_warnings.append(message)
+        st.warning(message)
+
+if 'store_initialized' not in st.session_state:
+    st.session_state.store_warnings=[]
+    st.session_state.store_restored=0
+    if st.session_state.get('runs'):
+        # Migrate existing live-session models once; never clear them on an I/O error.
+        for existing_run in st.session_state.runs[-6:]:
+            if not existing_run.get('_saved_local'): save_completed_run(existing_run)
+    else:
+        try:
+            recovered,warnings,count=store.load()
+            st.session_state.runs=recovered
+            st.session_state.store_warnings.extend(warnings)
+            st.session_state.store_restored=len(recovered)
+            st.session_state.completed_runs=count
+        except Exception as error:
+            st.session_state.runs=[]
+            st.session_state.store_warnings.append(f'No se pudo leer el historial local: {error}. No se borró ningún archivo.')
+    st.session_state.store_initialized=True
+if 'runs' not in st.session_state: st.session_state.runs=[]
+st.caption(f"Últimos 6 experimentos: guardado automático local en {store.root}. Recuperados en esta sesión: {st.session_state.store_restored}. Se conservan resultados y pesos, no el borrador del editor ni ejecuciones en curso.")
+for message in dict.fromkeys(st.session_state.store_warnings): st.warning(message)
+unsaved=[run for run in st.session_state.runs if not run.get('_saved_local')]
+if unsaved and st.button('Reintentar guardado local',key='retry_local_save'):
+    st.session_state.store_warnings=[]
+    for existing_run in unsaved: save_completed_run(existing_run)
+    st.rerun()
+
 if "base" not in st.session_state: st.session_state.base=Config().dict()
 if st.session_state.get("view")=="live":
     st.sidebar.empty()
@@ -59,7 +100,9 @@ if st.session_state.get("view")=="live":
             run=train(Config.from_dict(pending),monitor.batch,on_event=monitor.event)
             st.session_state.completed_runs=st.session_state.get("completed_runs",len(st.session_state.runs))+1
             st.session_state.runs.append(run);st.session_state.runs=st.session_state.runs[-6:]
+            save_completed_run(run)
             monitor.event({"phase":"early_stopped" if run["stopped_early"] else "completed","message":f"Entrenamiento finalizado · {run['epochs_completed']} de {run['max_epochs']} épocas. "+("Parada por paciencia. " if run['stop_reason']=='patience' else "Máximo alcanzado. ")+f"Mejor checkpoint: época {run['best_epoch']}.","epochs_completed":run['epochs_completed'],"best_epoch":run['best_epoch']})
+            if not run.get("_saved_local"): st.rerun()
         except Exception as error:monitor.event({"phase":"error","message":str(error)})
     elif snapshot["phase"] not in TERMINAL:
         monitor.event({"phase":"error","message":"La ejecución fue interrumpida por una recarga/cambio de archivo. No se reinicia automáticamente; la última CNN completada se conserva. Volvé a configuración para un intento explícito. Si había una descarga antigua, puede seguir en curso y no se sobrescribirá."})
@@ -93,6 +136,7 @@ with st.sidebar.container():
     with st.expander("Qué carga cada preset"):
         st.caption("Cargar reemplaza arquitectura, hiperparámetros y dataset del editor; no tus resultados anteriores. Los pesos se inicializan al azar al entrenar.")
         st.markdown("**CNN base:** Digits, 2 bloques (16→32), max-pool, densa64/ReLU/dropout0.1, Adam0.003, 8 épocas.\n\n**Sin pooling:** base sin pooling. **Promedio global:** base con GAP y sin ocultas. **Sobreajuste:** Digits300, densas128→64 sin dropout, 25 épocas. **Con augmentation:** base + affine. **Animales CIFAR-10:** RGB, 3000 muestras, 10 épocas, resto de la base.")
+    config_export_slot=st.empty()
     upload=st.file_uploader("Importar configuración JSON",type="json")
     if upload and st.button("Aplicar JSON"):
         try:
@@ -227,6 +271,9 @@ except (ValueError,RuntimeError) as e:
     valid=False
     invalid_reason=str(e)
     with arch_tab: st.error(str(e))
+with config_export_slot.container():
+    st.download_button("Exportar arquitectura e hiperparámetros (JSON)",config_json(config),"config-actual.json","application/json",key="export_current_config",width="stretch")
+    st.caption("Configuración actual del editor, sin pesos. Se puede volver a cargar con Importar configuración JSON.")
 with arch_tab:
     if valid:
         st.metric("Parámetros entrenables",f"{sum(p.numel() for p in preview.parameters()):,}")
@@ -246,7 +293,6 @@ with arch_tab:
         else:
             st.caption("Nodos = bloques u operaciones, no neuronas individuales. Conexiones = flujo de datos de arriba hacia abajo. Colores: entrada gris · conv teal · activación terracota · BN ocre · dropout mostaza · pooling verde · vector azul gris · densa azul · logits rosa oscuro. Cambiá a Neuronas de la MLP para ver conectividad densa.")
         st.caption("RF teórico mide extensión en píxeles de entrada; incluye padding y puede superar la imagen. No equivale a sensibilidad efectiva.")
-    st.download_button("Exportar configuración JSON",json.dumps(config.dict(),indent=2),"cnn-config.json","application/json")
 
 with data_tab:
     section("Inspección antes de entrenar","Comprobá clases, particiones y transformaciones sobre ejemplos reales.")
@@ -304,6 +350,9 @@ if st.session_state.runs:
         run_labels=[f"{i+1} · {r['config']['dataset']} / {r['config']['optimizer']}" for i,r in enumerate(st.session_state.runs)]
         selected=st.selectbox("Experimento para inspeccionar",list(range(len(run_labels))),index=len(run_labels)-1,format_func=lambda i:run_labels[i])
         run=st.session_state.runs[selected]
+        if run.get("completed_at"): st.caption(f"Guardado: {run['completed_at']} · ID {run['_experiment_id'][:8]}" if run.get("_saved_local") else "Este resultado sigue sólo en memoria.")
+        st.download_button("Exportar configuración del experimento (JSON)",config_json(run["config"]),f"experimento-{run.get('_experiment_id','sin-guardar')[:8]}-config.json","application/json",key="export_frozen_config")
+        st.caption("Exporta arquitectura e hiperparámetros congelados de este experimento, no los cambios del editor. Los pesos se descargan por separado.")
         if Config.from_dict(run["config"]).dict()!=config.dict(): st.warning("Los controles actuales no coinciden con este experimento. Los resultados y mapas usan su configuración congelada, no los controles editados.")
         st.caption(f"Completadas {run.get('epochs_completed',len(run['history']))} de {run.get('max_epochs',run['config']['epochs'])} épocas · mejor checkpoint {run['best_epoch']} · motivo {"paciencia" if run.get('stop_reason')=='patience' else "máximo de épocas"}")
         st.json(run["config"],expanded=False)
@@ -321,7 +370,7 @@ if st.session_state.runs:
         buffer=io.BytesIO()
         torch.save({"format_version":4,"input_shape":list(run["data"].images.shape[1:]),"source_indices":run["data"].source_indices,"state_dict":run["model"].state_dict(),"config":Config.from_dict(run["config"]).dict(),"mean":run["data"].mean,"std":run["data"].std,"classes":run["data"].names,"best_epoch":run["best_epoch"],"epochs_completed":run.get("epochs_completed",len(run["history"])),"max_epochs":run.get("max_epochs",run["config"]["epochs"]),"stopped_early":run.get("stopped_early",False),"stop_reason":run.get("stop_reason","max_epochs"),"split_indices":{"train":run["data"].train.tolist(),"val":run["data"].val.tolist(),"test":run["data"].test.tolist()},"history":run["history"]},buffer)
         st.download_button("Descargar checkpoint + metadatos",buffer.getvalue(),"cnn-best.pt","application/octet-stream")
-        st.caption("Historial: últimos 6 experimentos de esta sesión en memoria. Descargá artefactos antes de cerrar/reiniciar. Checkpoint para inferencia, no para reanudar optimizer.")
+        st.caption("Historial: últimos 6 experimentos completados, guardados localmente en experiments/ y recuperables al refrescar. Si falla el guardado se indica arriba. Checkpoint para inferencia, no para reanudar optimizer.")
 
 with training_tab:
     st.divider()

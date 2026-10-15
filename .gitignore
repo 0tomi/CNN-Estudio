@@ -9,3 +9,6 @@ data/
 /artifacts/
 /playwright-report/
 /test-results/
+
+# Local experiment snapshots include data and weights
+/experiments/
