@@ -5,6 +5,7 @@ import torch
 from torch import nn
 
 MAX_CONV_BLOCKS = 10
+MAX_CONV_FILTERS = 300
 MAX_EPOCHS = 200
 
 @dataclass
@@ -104,8 +105,8 @@ def validate(c):
         if not 1 <= len(b.layers) <= 3 or b.activation not in ACTIVATIONS or b.pooling not in ("none","max","avg") or not isinstance(b.pool_size,int) or isinstance(b.pool_size,bool) or not 2 <= b.pool_size <= 4:
             raise ValueError("Configuración de bloque inválida.")
         for l in b.layers:
-            if not all(isinstance(value,int) and not isinstance(value,bool) for value in (l.channels,l.kernel,l.stride,l.padding,l.dilation)) or not (1 <= l.channels <= 64 and 1 <= l.kernel <= 7 and l.stride in (1,2) and 0 <= l.padding <= 3 and l.dilation in (1,2)):
-                raise ValueError("Convolución inválida: filtros 1–64; lado kernel entero 1–7; stride/dilatación 1/2; padding 0–3.")
+            if not all(isinstance(value,int) and not isinstance(value,bool) for value in (l.channels,l.kernel,l.stride,l.padding,l.dilation)) or not (1 <= l.channels <= MAX_CONV_FILTERS and 1 <= l.kernel <= 7 and l.stride in (1,2) and 0 <= l.padding <= 3 and l.dilation in (1,2)):
+                raise ValueError(f"Convolución inválida: filtros 1–{MAX_CONV_FILTERS}; lado kernel entero 1–7; stride/dilatación 1/2; padding 0–3.")
 
 class CNN(nn.Module):
     def __init__(self, config: Config, size=None, in_channels=None, num_classes=None):

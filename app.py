@@ -9,7 +9,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import torch
-from cnn_lab.model import Config, Block, Conv, CNN, DenseLayer, ACTIVATIONS, DATASET_SPECS, dataset_spec, MAX_CONV_BLOCKS, MAX_EPOCHS
+from cnn_lab.model import Config, Block, Conv, CNN, DenseLayer, ACTIVATIONS, DATASET_SPECS, dataset_spec, MAX_CONV_BLOCKS, MAX_EPOCHS, MAX_CONV_FILTERS
 from cnn_lab.data import prepare, augment, display_image
 from cnn_lab.inference import classify_latest
 from cnn_lab.training import train
@@ -177,7 +177,7 @@ with arch_tab:
                 l=b.layers[j] if j<len(b.layers) else Conv(b.layers[-1].channels)
                 section(f"Convolución {j+1} · filtros","Cada filtro recorre todos los canales de entrada y produce un mapa de salida.")
                 cols=st.columns(3)
-                with cols[0]: channels=number("Cantidad de filtros / mapas de salida",1,64,l.channels,f"{i}_{j}_ch",help="16 filtros producen 16 canales de salida. No es el tamaño espacial del filtro.")
+                with cols[0]: channels=number("Cantidad de filtros / mapas de salida",1,MAX_CONV_FILTERS,l.channels,f"{i}_{j}_ch",help=f"1–{MAX_CONV_FILTERS} filtros por convolución. Por ejemplo, 16 filtros producen 16 canales de salida. No es el lado espacial del kernel (1–7). Se mantiene el límite global de2M parámetros.")
                 with cols[1]: kernel=number("Lado del filtro · k × k",1,7,l.kernel,f"{i}_{j}_k",help="Escribí el lado entero de un filtro CUADRADO: 3 significa 3×3, no tres filtros. Admite1–7, incluidos tamaños pares.")
                 with cols[2]: stride=number("Paso de convolución · stride",1,2,l.stride,f"{i}_{j}_s",help="Avance del filtro en píxeles: 1 o 2.")
                 cols=st.columns(2)
